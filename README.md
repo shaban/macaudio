@@ -119,6 +119,42 @@ inputDevices := midiDevices.Inputs()
 outputDevices := midiDevices.Outputs()
 ```
 
+## Device Compatibility
+
+Find common capabilities between audio devices for seamless routing:
+
+```go
+import "macaudio/devices"
+
+// Get input and output devices
+audioDevices, _ := devices.GetAllAudioDevices()
+inputDevice := audioDevices.Inputs()[0]   // Audio interface
+outputDevice := audioDevices.Outputs()[0] // Speakers/headphones
+
+// Find compatible sample rates and bit depths
+commonRates := inputDevice.CommonSampleRates(outputDevice)
+commonDepths := inputDevice.CommonBitDepths(outputDevice)
+
+fmt.Printf("Compatible sample rates: %v\n", commonRates)     // [44100, 48000]
+fmt.Printf("Compatible bit depths: %v\n", commonDepths)     // [24, 32]
+
+// Perfect for UI dropdowns - only show rates both devices support
+for _, rate := range commonRates {
+    sampleRateSelect.AddOption(fmt.Sprintf("%d Hz", rate))
+}
+```
+
+### Real-world Use Case:
+```go
+// User changes input device - find compatibility with existing output
+newInput := audioDevices.ByType("usb")[0]        // User selected new USB interface
+existingOutput := audioDevices.ByType("builtin")[0]  // Already selected built-in
+
+// Update UI to show only compatible options
+availableRates := newInput.CommonSampleRates(existingOutput)
+// Returns: [44100, 48000] - only rates both can handle
+```
+
 ## Device Filtering
 
 Both audio and MIDI devices support comprehensive filtering:
