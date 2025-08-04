@@ -25,7 +25,7 @@ func TestAudioDeviceCompatibility(t *testing.T) {
 
 	device2 := AudioDevice{
 		Device: Device{
-			Name:     "Test Device 2", 
+			Name:     "Test Device 2",
 			UID:      "test2",
 			IsOnline: true,
 		},
@@ -38,7 +38,7 @@ func TestAudioDeviceCompatibility(t *testing.T) {
 	device3 := AudioDevice{
 		Device: Device{
 			Name:     "Test Device 3",
-			UID:      "test3", 
+			UID:      "test3",
 			IsOnline: true,
 		},
 		SupportedSampleRates: []int{44100, 48000},
@@ -182,7 +182,7 @@ func TestAudioDeviceCompatibilityWithRealDevices(t *testing.T) {
 
 	t.Run("RealDeviceCommonRates", func(t *testing.T) {
 		common := device1.CommonSampleRates(device2)
-		
+
 		// Log the results for manual verification
 		t.Logf("Device 1: %s - Sample rates: %v", device1.Name, device1.SupportedSampleRates)
 		t.Logf("Device 2: %s - Sample rates: %v", device2.Name, device2.SupportedSampleRates)
@@ -197,7 +197,7 @@ func TestAudioDeviceCompatibilityWithRealDevices(t *testing.T) {
 					break
 				}
 			}
-			
+
 			found2 := false
 			for _, r2 := range device2.SupportedSampleRates {
 				if r2 == rate {
@@ -217,7 +217,7 @@ func TestAudioDeviceCompatibilityWithRealDevices(t *testing.T) {
 
 	t.Run("RealDeviceCommonDepths", func(t *testing.T) {
 		common := device1.CommonBitDepths(device2)
-		
+
 		// Log the results for manual verification
 		t.Logf("Device 1: %s - Bit depths: %v", device1.Name, device1.SupportedBitDepths)
 		t.Logf("Device 2: %s - Bit depths: %v", device2.Name, device2.SupportedBitDepths)
@@ -232,7 +232,7 @@ func TestAudioDeviceCompatibilityWithRealDevices(t *testing.T) {
 					break
 				}
 			}
-			
+
 			found2 := false
 			for _, d2 := range device2.SupportedBitDepths {
 				if d2 == depth {

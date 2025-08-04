@@ -74,13 +74,13 @@ func (a AudioDevice) CommonSampleRates(other AudioDevice) []int {
 	if len(a.SupportedSampleRates) == 0 || len(other.SupportedSampleRates) == 0 {
 		return []int{}
 	}
-	
+
 	// Create a map for fast lookup
 	otherRates := make(map[int]bool)
 	for _, rate := range other.SupportedSampleRates {
 		otherRates[rate] = true
 	}
-	
+
 	// Find intersection, preserving order from first device
 	var common []int
 	for _, rate := range a.SupportedSampleRates {
@@ -88,7 +88,7 @@ func (a AudioDevice) CommonSampleRates(other AudioDevice) []int {
 			common = append(common, rate)
 		}
 	}
-	
+
 	return common
 }
 
@@ -97,13 +97,13 @@ func (a AudioDevice) CommonBitDepths(other AudioDevice) []int {
 	if len(a.SupportedBitDepths) == 0 || len(other.SupportedBitDepths) == 0 {
 		return []int{}
 	}
-	
+
 	// Create a map for fast lookup
 	otherDepths := make(map[int]bool)
 	for _, depth := range other.SupportedBitDepths {
 		otherDepths[depth] = true
 	}
-	
+
 	// Find intersection, preserving order from first device
 	var common []int
 	for _, depth := range a.SupportedBitDepths {
@@ -111,7 +111,7 @@ func (a AudioDevice) CommonBitDepths(other AudioDevice) []int {
 			common = append(common, depth)
 		}
 	}
-	
+
 	return common
 }
 
