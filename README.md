@@ -1,4 +1,4 @@
-# goauv3 - macOS Audio/MIDI Device Library
+# macaudio - macOS Audio/MIDI Device Library
 
 A silent, Go library for enumerating macOS Core Audio and Core MIDI devices with configurable JSON logging.
 
@@ -20,15 +20,15 @@ import (
     "fmt"
     "log"
     
-    "github.com/yourusername/goauv3"
+    "macaudio/devices"
 )
 
 func main() {
     // Enable JSON logging for debugging (optional)
-    auv3.SetJSONLogging(true)
+    devices.SetJSONLogging(true)
     
     // Get all audio devices
-    audioDevices, err := auv3.GetAllAudioDevices()
+    audioDevices, err := devices.GetAllAudioDevices()
     if err != nil {
         log.Fatal(err)
     }
@@ -40,7 +40,7 @@ func main() {
     fmt.Printf("Input devices: %d\n", len(inputDevices))
     
     // Get all MIDI devices  
-    midiDevices, err := auv3.GetAllMIDIDevices()
+    midiDevices, err := devices.GetAllMIDIDevices()
     if err != nil {
         log.Fatal(err)
     }
@@ -53,11 +53,19 @@ func main() {
 }
 ```
 
+## Installation
+
+```bash
+go get github.com/shaban/macaudio
+```
+
 ## Audio Device Example
 
 ```go
+import "macaudio/devices"
+
 // Get audio devices with rich capabilities
-audioDevices, err := auv3.GetAllAudioDevices()
+audioDevices, err := devices.GetAllAudioDevices()
 if err != nil {
     log.Fatal(err)
 }
@@ -83,8 +91,10 @@ onlineDevices := audioDevices.Online()
 ## MIDI Device Example
 
 ```go
+import "macaudio/devices"
+
 // Get MIDI devices with complete hierarchy
-midiDevices, err := auv3.GetAllMIDIDevices()
+midiDevices, err := devices.GetAllMIDIDevices()
 if err != nil {
     log.Fatal(err)
 }
@@ -102,49 +112,33 @@ for _, device := range midiDevices {
     fmt.Printf("  Online: %v\n", device.IsOnline)
 }
 
-// Filter examples
-midiInputs := midiDevices.Inputs()
-midiOutputs := midiDevices.Outputs()
-onlineMidi := midiDevices.Online()
+// Filter examples  
+bossMIDI := midiDevices.ByManufacturer("BOSS Corporation")
+katanaMIDI := midiDevices.ByModel("KATANA")
+inputDevices := midiDevices.Inputs()
+outputDevices := midiDevices.Outputs()
 ```
 
-## Device Filtering Methods
+## Device Filtering
 
-### Audio Devices
-
-```go
-audioDevices, _ := auv3.GetAllAudioDevices()
-
-// Capability filters
-inputs := audioDevices.Inputs()           // Can capture audio
-outputs := audioDevices.Outputs()         // Can play audio  
-inputOutput := audioDevices.InputOutput() // Can do both
-
-// Type filters
-usbDevices := audioDevices.ByType("usb")
-builtinDevices := audioDevices.ByType("builtin")
-bluetoothDevices := audioDevices.ByType("bluetooth")
-
-// Status filters
-onlineDevices := audioDevices.Online()
-```
-
-### MIDI Devices
+Both audio and MIDI devices support comprehensive filtering:
 
 ```go
-midiDevices, _ := auv3.GetAllMIDIDevices()
+// Audio device filters
+audioDevices := devices.GetAllAudioDevices()
+inputs := audioDevices.Inputs()           // Input capable devices
+outputs := audioDevices.Outputs()         // Output capable devices  
+inputOutput := audioDevices.InputOutput() // Bidirectional devices
+builtin := audioDevices.ByType("builtin") // Built-in devices
+usb := audioDevices.ByType("usb")         // USB devices
 
-// Capability filters
-inputs := midiDevices.Inputs()           // Can receive MIDI
-outputs := midiDevices.Outputs()         // Can send MIDI
-inputOutput := midiDevices.InputOutput() // Can do both
-
-// Manufacturer filters
-rolandDevices := midiDevices.ByManufacturer("Roland")
-appleDevices := midiDevices.ByManufacturer("Apple")
-
-// Status filters
-onlineDevices := midiDevices.Online()
+// MIDI device filters
+midiDevices := devices.GetAllMIDIDevices()
+inputs := midiDevices.Inputs()                    // Input endpoints
+outputs := midiDevices.Outputs()                 // Output endpoints
+boss := midiDevices.ByManufacturer("BOSS")       // BOSS devices
+katana := midiDevices.ByModel("KATANA")          // KATANA models
+online := midiDevices.Online()                   // Online devices
 ```
 
 ## JSON Logging
@@ -152,42 +146,78 @@ onlineDevices := midiDevices.Online()
 Enable detailed JSON logging for debugging:
 
 ```go
-// Enable JSON logging to see raw device data
-auv3.SetJSONLogging(true)
+import "macaudio/devices"
 
-audioDevices, _ := auv3.GetAllAudioDevices()
+// Enable JSON logging to see raw device data
+devices.SetJSONLogging(true)
+
+audioDevices, _ := devices.GetAllAudioDevices()
 // Outputs: 🔍 Audio Devices JSON: {"success":true,"devices":[...],"deviceCount":5}
 
-midiDevices, _ := auv3.GetAllMIDIDevices()  
+midiDevices, _ := devices.GetAllMIDIDevices()  
 // Outputs: 🔍 MIDI Devices JSON: {"success":true,"devices":[...],"deviceCount":8}
 
 // Disable for production
-auv3.SetJSONLogging(false)
+devices.SetJSONLogging(false)
 ```
 
 ## Testing
 
-Run the comprehensive test suite:
+Use the included Makefile for comprehensive testing:
+
+```bash
+# Test all devices (recommended)
+make test-all
+
+# Test specific device types
+make test-audio
+make test-midi
+
+# Test with clean build
+make test-clean
+
+# Show library information
+make info
+
+# Show all available commands
+make help
+```
+
+Or use Go directly:
 
 ```bash
 # Test audio devices
-go test -run TestGetAllAudioDevices -v
+go test -v ./devices -run TestGetAudioDevices
 
 # Test MIDI devices  
-go test -run TestGetAllMIDIDevices -v
-
-# Test device filtering
-go test -run TestMIDIDeviceFiltering -v
+go test -v ./devices -run TestGetAllMIDIDevices
 
 # Run all tests
-go test -v
+go test -v ./devices
 ```
 
 ## Requirements
 
 - macOS 10.9+ (Core Audio/MIDI frameworks)
-- Go 1.16+ with CGO enabled
+- Go 1.23+ with CGO enabled
 - Xcode command line tools
+
+## Package Structure
+
+```
+macaudio/                          # Root package
+├── LICENSE                        # GNU AGPL v3 License
+├── README.md                      # This file
+├── go.mod                         # Module: macaudio
+├── Makefile                       # Build and test commands
+└── devices/                       # Device enumeration package
+    ├── devices.go                 # Main API
+    ├── devices_test.go            # Audio device tests
+    ├── midi_test.go               # MIDI device tests
+    ├── unified_test.go            # Combined tests
+    └── native/
+        └── devices.m              # Core Audio/MIDI implementation
+```
 
 ## Architecture
 
@@ -215,3 +245,38 @@ Each endpoint includes:
 - Display names (user-friendly names)
 - SysEx transfer speeds
 - Unique endpoint IDs for Core MIDI operations
+
+## Real Device Examples
+
+The library has been tested with real hardware:
+
+### MIDI Devices
+- **BOSS KATANA**: Guitar amplifier with MIDI control (manufacturer: "BOSS Corporation", model: "KATANA")
+- **Nektar SE61**: MIDI keyboard controller (manufacturer: "Nektar", model: "SE61")  
+- **Mooer Audio Steep II**: Audio interface with MIDI (manufacturer: "Mooer Audio", model: "Steep II")
+- **Apple IAC Driver**: Virtual MIDI buses (manufacturer: "Apple Inc.", model: "IAC Driver")
+
+### Audio Devices
+- **USB Audio Interfaces**: Complete sample rate and bit depth enumeration
+- **Built-in Audio**: Mac built-in speakers and headphone outputs
+- **HDMI Audio**: External displays with audio capabilities
+- **Background Music**: Virtual audio routing devices
+
+## Contributing
+
+Contributions are welcome! Please ensure all tests pass:
+
+```bash
+make test-all
+```
+
+## License
+
+This project is licensed under the GNU Affero General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
+
+## Support
+
+- **Go Version**: 1.23+
+- **Platform**: macOS 10.9+
+- **Architecture**: x86_64, ARM64 (Apple Silicon)
+- **Dependencies**: Core Audio, Core MIDI frameworks (system-provided)
