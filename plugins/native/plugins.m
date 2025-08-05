@@ -429,3 +429,78 @@ char *IntrospectAudioUnitsWithTimeout(double timeoutSeconds) {
         }
     }
 }
+
+// Quick scan function - just enumerate AudioComponents without instantiation
+char *QuickScanAudioUnits(void) {
+    @autoreleasepool {
+        // Silent operation by default (follows devices package pattern)
+        
+        AudioComponentDescription searchDescription = {
+            .componentType = 0,          // 0 = scan all types
+            .componentSubType = 0,       // 0 = scan all subtypes
+            .componentManufacturer = 0,  // 0 = scan all manufacturers
+            .componentFlags = 0,
+            .componentFlagsMask = 0
+        };
+
+        AudioComponent currentComponent = NULL;
+        int count = 0;
+
+        // Array to hold basic plugin info (no parameters)
+        NSMutableArray *pluginList = [NSMutableArray array];
+
+        do {
+            currentComponent = AudioComponentFindNext(currentComponent, &searchDescription);
+
+            if (currentComponent != NULL) {
+                CFStringRef nameCFString = NULL;
+                AudioComponentCopyName(currentComponent, &nameCFString);
+
+                AudioComponentDescription componentDesc;
+                AudioComponentGetDescription(currentComponent, &componentDesc);
+
+                NSString *auName = (nameCFString != NULL) ? (__bridge NSString *)nameCFString : @"[Unknown Name]";
+
+                count++;
+
+                // Create basic plugin info dictionary (NO parameters)
+                NSDictionary *pluginInfo = @{
+                    @"name": auName,
+                    @"manufacturerID": StringFromFourCharCode(componentDesc.componentManufacturer),
+                    @"type": StringFromFourCharCode(componentDesc.componentType),
+                    @"subtype": StringFromFourCharCode(componentDesc.componentSubType)
+                };
+
+                [pluginList addObject:pluginInfo];
+
+                if (nameCFString) {
+                    CFRelease(nameCFString);
+                }
+            }
+        } while (currentComponent != NULL);
+
+        // Return success result with plugin list (like devices pattern)
+        NSDictionary *successResult = @{
+            @"success": @YES,
+            @"plugins": pluginList,
+            @"pluginCount": @([pluginList count]),
+            @"totalPluginsScanned": @(count)
+        };
+
+        NSError *jsonError = nil;
+        NSData *jsonData = [NSJSONSerialization dataWithJSONObject:successResult options:0 error:&jsonError];
+
+        if (!jsonData || jsonError) {
+            NSDictionary *errorResult = @{
+                @"success": @NO,
+                @"error": @"JSON serialization failed",
+                @"errorCode": @(-2),
+                @"plugins": @[]
+            };
+            jsonData = [NSJSONSerialization dataWithJSONObject:errorResult options:0 error:nil];
+        }
+
+        NSString *result = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+        return strdup([result UTF8String]);
+    }
+}

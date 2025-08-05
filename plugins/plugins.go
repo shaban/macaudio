@@ -12,8 +12,12 @@ package plugins
 // Define the external variable that the Objective-C code expects
 int g_verboseLogging = 0;  // 0 = silent, 1 = verbose
 
-// Declare the function so CGO can find it
+// Declare the functions so CGO can find them
 char *IntrospectAudioUnitsWithTimeout(double timeoutSeconds);
+char *QuickScanAudioUnits(void);
+
+// Expose the variable so Go can modify it
+extern int g_verboseLogging;
 */
 import "C"
 import (
@@ -29,7 +33,34 @@ var enableJSONLogging = false
 // SetJSONLogging enables or disables JSON logging for debugging
 func SetJSONLogging(enabled bool) {
 	enableJSONLogging = enabled
+	// Also control native logging for consistency (like devices package)
+	if enabled {
+		C.g_verboseLogging = 1
+	} else {
+		C.g_verboseLogging = 0
+	}
 }
+
+// PluginInfo represents basic AudioUnit plugin information (quick scan)
+type PluginInfo struct {
+	Name           string `json:"name"`
+	ManufacturerID string `json:"manufacturerID"`
+	Type           string `json:"type"`
+	Subtype        string `json:"subtype"`
+}
+
+// QuickScanResponse represents the response from quick scan (like devices pattern)
+type QuickScanResponse struct {
+	Success             bool         `json:"success"`
+	Plugins             []PluginInfo `json:"plugins"`
+	PluginCount         int          `json:"pluginCount"`
+	TotalPluginsScanned int          `json:"totalPluginsScanned"`
+	Error               string       `json:"error,omitempty"`
+	ErrorCode           int          `json:"errorCode,omitempty"`
+}
+
+// PluginInfos represents a collection of PluginInfo objects with filtering methods
+type PluginInfos []PluginInfo
 
 // Plugin represents an Audio Unit plugin with its complete metadata and parameters
 type Plugin struct {
@@ -88,6 +119,84 @@ func GetPluginsWithTimeout(timeoutSeconds float64) (Plugins, error) {
 	}
 
 	return Plugins(plugins), nil
+}
+
+// GetPluginList returns a quick enumeration of all available AudioUnit plugins (no parameters)
+func GetPluginList() (PluginInfos, error) {
+	cPluginList := C.QuickScanAudioUnits()
+	if cPluginList == nil {
+		return nil, fmt.Errorf("failed to scan AudioUnit plugins")
+	}
+	defer C.free(unsafe.Pointer(cPluginList))
+
+	jsonData := C.GoString(cPluginList)
+
+	// JSON logging when enabled (follows devices pattern)
+	if enableJSONLogging {
+		fmt.Printf("🔍 Plugin List JSON: %s\n", jsonData)
+	}
+
+	var response QuickScanResponse
+	if err := json.Unmarshal([]byte(jsonData), &response); err != nil {
+		return nil, fmt.Errorf("failed to parse plugin list data: %v", err)
+	}
+
+	// Check for success status (like devices pattern)
+	if !response.Success {
+		errorMsg := response.Error
+		if errorMsg == "" {
+			errorMsg = "unknown error"
+		}
+		return nil, fmt.Errorf("plugin scan failed: %s (code: %d)", errorMsg, response.ErrorCode)
+	}
+
+	return PluginInfos(response.Plugins), nil
+}
+
+// Filter methods for PluginInfos collection
+
+// ByManufacturer returns plugin infos from a specific manufacturer ID
+func (infos PluginInfos) ByManufacturer(manufacturerID string) PluginInfos {
+	var filtered PluginInfos
+	for _, info := range infos {
+		if info.ManufacturerID == manufacturerID {
+			filtered = append(filtered, info)
+		}
+	}
+	return filtered
+}
+
+// ByType returns plugin infos of a specific type (e.g., "aufx", "aumu", "aumf")
+func (infos PluginInfos) ByType(pluginType string) PluginInfos {
+	var filtered PluginInfos
+	for _, info := range infos {
+		if info.Type == pluginType {
+			filtered = append(filtered, info)
+		}
+	}
+	return filtered
+}
+
+// BySubtype returns plugin infos of a specific subtype
+func (infos PluginInfos) BySubtype(subtype string) PluginInfos {
+	var filtered PluginInfos
+	for _, info := range infos {
+		if info.Subtype == subtype {
+			filtered = append(filtered, info)
+		}
+	}
+	return filtered
+}
+
+// ByName returns plugin infos matching a specific name pattern (case-insensitive)
+func (infos PluginInfos) ByName(namePattern string) PluginInfos {
+	var filtered PluginInfos
+	for _, info := range infos {
+		if matchesPattern(info.Name, namePattern) {
+			filtered = append(filtered, info)
+		}
+	}
+	return filtered
 }
 
 // Filter methods for Plugins collection
