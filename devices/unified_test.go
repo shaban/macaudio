@@ -7,16 +7,16 @@ import (
 	"testing"
 )
 
-func TestGetAllAudioDevices(t *testing.T) {
+func TestGetAudio(t *testing.T) {
 	fmt.Println("Testing unified getAudioDevices function...")
 
 	// Enable JSON logging for testing
 	SetJSONLogging(true)
 	defer SetJSONLogging(false)
 
-	devices, err := GetAllAudioDevices()
+	devices, err := GetAudio()
 	if err != nil {
-		t.Fatalf("Error getting all audio devices: %v", err)
+		t.Fatalf("Error getting audio devices: %v", err)
 	}
 
 	if len(devices) == 0 {
@@ -74,9 +74,9 @@ func TestConvenienceFilters(t *testing.T) {
 	fmt.Println("Testing convenience filter functions...")
 
 	// Get all devices first
-	allDevices, err := GetAllAudioDevices()
+	allDevices, err := GetAudio()
 	if err != nil {
-		t.Fatalf("Error getting all audio devices: %v", err)
+		t.Fatalf("Error getting audio devices: %v", err)
 	}
 
 	// Test filter methods

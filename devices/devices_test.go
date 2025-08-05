@@ -14,9 +14,9 @@ func TestGetAudioDevices(t *testing.T) {
 	defer SetJSONLogging(false)
 
 	// Call the unified function
-	devices, err := GetAllAudioDevices()
+	devices, err := GetAudio()
 	if err != nil {
-		t.Fatalf("GetAllAudioDevices returned error: %v", err)
+		t.Fatalf("GetAudio returned error: %v", err)
 	}
 
 	// Check that we got at least one device

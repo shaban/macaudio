@@ -1,28 +1,16 @@
-# macaudio - macOS Audio/MIDI Device Library Makefile
-# Silent library with configurable JSON logging
+# macaudio - macOS Audio/MIDI Library Makefile
+# Root makefile for the complete macaudio library
 
-.PHONY: test test-audio test-midi test-all clean help info test-clean
+.PHONY: test test-devices clean help info test-clean
 
-# Default target - run all tests
-all: test-all
+# Default target - run comprehensive device tests
+all: test-devices
 
-# Test audio devices with JSON logging
-test-audio:
-	@echo "🔊 Testing Audio Device Library..."
-	go test -v ./devices -run TestGetAudioDevices
-	@echo "✅ Audio test complete"
-
-# Test MIDI devices with JSON logging
-test-midi:
-	@echo "🎹 Testing MIDI Device Library..."
-	go test -v ./devices -run TestGetAllMIDIDevices
-	@echo "✅ MIDI test complete"
-
-# Test all devices (comprehensive)
-test-all:
-	@echo "📱 Testing Complete Audio/MIDI Device Library..."
+# Test device library (comprehensive test of all device functionality)
+test-devices:
+	@echo "📱 Testing Complete Device Library Package..."
 	go test -v ./devices
-	@echo "✅ All tests complete"
+	@echo "✅ Device library tests complete"
 
 # Clean build cache
 clean:
@@ -31,34 +19,37 @@ clean:
 	@echo "✅ Clean complete"
 
 # Test with clean build
-test-clean: clean test-all
+test-clean: clean test-devices
 
 # Show library info
 info:
-	@echo "📋 Library Information:"
+	@echo "📋 macaudio Library Information:"
 	@echo "  Go version: $(shell go version)"
 	@echo "  GOOS: $(shell go env GOOS)"
 	@echo "  GOARCH: $(shell go env GOARCH)"
 	@echo "  CGO_ENABLED: $(shell go env CGO_ENABLED)"
-	@echo "  Library: Silent Audio/MIDI Device Enumeration"
-	@echo "  Logging: Configurable via SetJSONLogging(true/false)"
+	@echo "  Library: macOS Audio/MIDI Device Enumeration"
+	@echo "  Main Package: macaudio/devices"
+	@echo "  API: devices.GetAudio() and devices.GetMIDI()"
 
 # Help
 help:
-	@echo "macaudio - macOS Audio/MIDI Device Library - Available Commands:"
+	@echo "macaudio - macOS Audio/MIDI Library - Available Commands:"
 	@echo ""
 	@echo "🧪 Testing:"
-	@echo "  make test-audio   - Test audio device enumeration"
-	@echo "  make test-midi    - Test MIDI device enumeration"
-	@echo "  make test-all     - Test both audio and MIDI (default)"
-	@echo "  make test-clean   - Clean build and test all"
+	@echo "  make test-devices  - Test complete device library (default)"
+	@echo "  make test-clean    - Clean build and test devices"
 	@echo ""
 	@echo "🧹 Maintenance:"
-	@echo "  make clean        - Clean build cache"
-	@echo "  make info         - Show library information"
+	@echo "  make clean         - Clean build cache"
+	@echo "  make info          - Show library information"
 	@echo ""
-	@echo "📦 Usage in code:"
+	@echo "📦 Package-specific testing:"
+	@echo "  cd devices && make help    # See device-specific test options"
+	@echo "  cd devices && make smoke   # Quick device validation"
+	@echo ""
+	@echo "📦 Usage in Go code:"
 	@echo "  import \"macaudio/devices\""
 	@echo "  devices.SetJSONLogging(true)     // Enable debug output"
-	@echo "  audioDevs, err := devices.GetAllAudioDevices()"
-	@echo "  midiDevs, err := devices.GetAllMIDIDevices()"
+	@echo "  audioDevs, err := devices.GetAudio()"
+	@echo "  midiDevs, err := devices.GetMIDI()"

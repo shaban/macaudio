@@ -28,7 +28,7 @@ func main() {
     devices.SetJSONLogging(true)
     
     // Get all audio devices
-    audioDevices, err := devices.GetAllAudioDevices()
+    audioDevices, err := devices.GetAudio()
     if err != nil {
         log.Fatal(err)
     }
@@ -40,7 +40,7 @@ func main() {
     fmt.Printf("Input devices: %d\n", len(inputDevices))
     
     // Get all MIDI devices  
-    midiDevices, err := devices.GetAllMIDIDevices()
+    midiDevices, err := devices.GetMIDI()
     if err != nil {
         log.Fatal(err)
     }
@@ -65,7 +65,7 @@ go get github.com/shaban/macaudio
 import "macaudio/devices"
 
 // Get audio devices with rich capabilities
-audioDevices, err := devices.GetAllAudioDevices()
+audioDevices, err := devices.GetAudio()
 if err != nil {
     log.Fatal(err)
 }
@@ -94,7 +94,7 @@ onlineDevices := audioDevices.Online()
 import "macaudio/devices"
 
 // Get MIDI devices with complete hierarchy
-midiDevices, err := devices.GetAllMIDIDevices()
+midiDevices, err := devices.GetMIDI()
 if err != nil {
     log.Fatal(err)
 }
@@ -121,13 +121,25 @@ outputDevices := midiDevices.Outputs()
 
 ## Device Compatibility
 
-Find common capabilities between audio devices for seamless routing:
+The library provides powerful utility methods to find compatible audio settings between devices:
+
+### Audio Device Compatibility Methods
 
 ```go
 import "macaudio/devices"
 
-// Get input and output devices
-audioDevices, _ := devices.GetAllAudioDevices()
+// CommonSampleRates finds sample rates supported by both devices
+func (device AudioDevice) CommonSampleRates(other AudioDevice) []int
+
+// CommonBitDepths finds bit depths supported by both devices  
+func (device AudioDevice) CommonBitDepths(other AudioDevice) []int
+```
+
+### Basic Usage
+
+```go
+// Get devices
+audioDevices, _ := devices.GetAudio()
 inputDevice := audioDevices.Inputs()[0]   // Audio interface
 outputDevice := audioDevices.Outputs()[0] // Speakers/headphones
 
@@ -138,21 +150,123 @@ commonDepths := inputDevice.CommonBitDepths(outputDevice)
 fmt.Printf("Compatible sample rates: %v\n", commonRates)     // [44100, 48000]
 fmt.Printf("Compatible bit depths: %v\n", commonDepths)     // [24, 32]
 
-// Perfect for UI dropdowns - only show rates both devices support
-for _, rate := range commonRates {
-    sampleRateSelect.AddOption(fmt.Sprintf("%d Hz", rate))
+// Check if devices are compatible
+if len(commonRates) == 0 || len(commonDepths) == 0 {
+    fmt.Println("⚠️  Devices are not compatible")
+} else {
+    fmt.Printf("✅ Found %d compatible configurations\n", len(commonRates)*len(commonDepths))
 }
 ```
 
-### Real-world Use Case:
-```go
-// User changes input device - find compatibility with existing output
-newInput := audioDevices.ByType("usb")[0]        // User selected new USB interface
-existingOutput := audioDevices.ByType("builtin")[0]  // Already selected built-in
+### UI Integration Examples
 
-// Update UI to show only compatible options
-availableRates := newInput.CommonSampleRates(existingOutput)
-// Returns: [44100, 48000] - only rates both can handle
+Perfect for dynamic UI updates when users change device selections:
+
+```go
+// Sample Rate Dropdown Population
+func updateSampleRateOptions(input, output AudioDevice) {
+    compatibleRates := input.CommonSampleRates(output)
+    
+    sampleRateSelect.Clear()
+    for _, rate := range compatibleRates {
+        sampleRateSelect.AddOption(fmt.Sprintf("%d Hz", rate))
+    }
+    
+    if len(compatibleRates) == 0 {
+        sampleRateSelect.AddOption("No compatible rates")
+        sampleRateSelect.Disable()
+    }
+}
+
+// Bit Depth Dropdown Population  
+func updateBitDepthOptions(input, output AudioDevice) {
+    compatibleDepths := input.CommonBitDepths(output)
+    
+    bitDepthSelect.Clear()
+    for _, depth := range compatibleDepths {
+        bitDepthSelect.AddOption(fmt.Sprintf("%d-bit", depth))
+    }
+}
+```
+
+### Real-world Use Cases
+
+```go
+// DAW/Audio Software: User changes input device
+func onInputDeviceChanged(newInput AudioDevice, currentOutput AudioDevice) {
+    availableRates := newInput.CommonSampleRates(currentOutput)
+    availableDepths := newInput.CommonBitDepths(currentOutput)
+    
+    // Update UI to show only compatible options
+    updateSampleRateDropdown(availableRates)
+    updateBitDepthDropdown(availableDepths)
+    
+    // Auto-select best option
+    if len(availableRates) > 0 {
+        selectBestSampleRate(availableRates) // e.g., highest available
+    }
+}
+
+// Pro Audio: Validate routing before connecting
+func validateAudioRoute(source, destination AudioDevice) error {
+    commonRates := source.CommonSampleRates(destination)
+    commonDepths := source.CommonBitDepths(destination)
+    
+    if len(commonRates) == 0 {
+        return fmt.Errorf("no compatible sample rates between %s and %s", 
+            source.Name, destination.Name)
+    }
+    
+    if len(commonDepths) == 0 {
+        return fmt.Errorf("no compatible bit depths between %s and %s", 
+            source.Name, destination.Name)
+    }
+    
+    return nil // Devices are compatible
+}
+
+// Audio Interface Setup: Find optimal settings
+func findOptimalSettings(devices []AudioDevice) (int, int) {
+    if len(devices) < 2 {
+        return 0, 0
+    }
+    
+    // Start with first device's capabilities
+    commonRates := devices[0].SupportedSampleRates
+    commonDepths := devices[0].SupportedBitDepths
+    
+    // Find intersection across all devices
+    for i := 1; i < len(devices); i++ {
+        commonRates = intersectRates(commonRates, devices[i].SupportedSampleRates)
+        commonDepths = intersectDepths(commonDepths, devices[i].SupportedBitDepths)
+    }
+    
+    // Return highest quality settings
+    bestRate := findHighest(commonRates)   // e.g., 96000
+    bestDepth := findHighest(commonDepths) // e.g., 32
+    
+    return bestRate, bestDepth
+}
+```
+
+### Edge Cases Handled
+
+The utility methods gracefully handle all edge cases:
+
+```go
+// Empty arrays - returns empty slice
+emptyDevice := AudioDevice{SupportedSampleRates: []int{}}
+result := device1.CommonSampleRates(emptyDevice) // Returns: []int{}
+
+// No intersection - returns empty slice  
+device1 := AudioDevice{SupportedSampleRates: []int{44100, 48000}}
+device2 := AudioDevice{SupportedSampleRates: []int{96000, 192000}}
+result := device1.CommonSampleRates(device2) // Returns: []int{}
+
+// Order preservation - maintains first device's order
+device1 := AudioDevice{SupportedSampleRates: []int{96000, 44100, 48000}}
+device2 := AudioDevice{SupportedSampleRates: []int{44100, 48000, 96000}}
+result := device1.CommonSampleRates(device2) // Returns: [96000, 44100, 48000]
 ```
 
 ## Device Filtering
@@ -161,7 +275,7 @@ Both audio and MIDI devices support comprehensive filtering:
 
 ```go
 // Audio device filters
-audioDevices := devices.GetAllAudioDevices()
+audioDevices := devices.GetAudio()
 inputs := audioDevices.Inputs()           // Input capable devices
 outputs := audioDevices.Outputs()         // Output capable devices  
 inputOutput := audioDevices.InputOutput() // Bidirectional devices
@@ -169,7 +283,7 @@ builtin := audioDevices.ByType("builtin") // Built-in devices
 usb := audioDevices.ByType("usb")         // USB devices
 
 // MIDI device filters
-midiDevices := devices.GetAllMIDIDevices()
+midiDevices := devices.GetMIDI()
 inputs := midiDevices.Inputs()                    // Input endpoints
 outputs := midiDevices.Outputs()                 // Output endpoints
 boss := midiDevices.ByManufacturer("BOSS")       // BOSS devices
@@ -187,10 +301,10 @@ import "macaudio/devices"
 // Enable JSON logging to see raw device data
 devices.SetJSONLogging(true)
 
-audioDevices, _ := devices.GetAllAudioDevices()
+audioDevices, _ := devices.GetAudio()
 // Outputs: 🔍 Audio Devices JSON: {"success":true,"devices":[...],"deviceCount":5}
 
-midiDevices, _ := devices.GetAllMIDIDevices()  
+midiDevices, _ := devices.GetMIDI()  
 // Outputs: 🔍 MIDI Devices JSON: {"success":true,"devices":[...],"deviceCount":8}
 
 // Disable for production
@@ -203,11 +317,11 @@ Use the included Makefile for comprehensive testing:
 
 ```bash
 # Test all devices (recommended)
-make test-all
+make test-devices
 
-# Test specific device types
-make test-audio
-make test-midi
+# Test specific device types (from devices directory)
+cd devices && make test-audio
+cd devices && make test-midi
 
 # Test with clean build
 make test-clean
@@ -223,10 +337,10 @@ Or use Go directly:
 
 ```bash
 # Test audio devices
-go test -v ./devices -run TestGetAudioDevices
+go test -v ./devices -run TestGetAudio
 
 # Test MIDI devices  
-go test -v ./devices -run TestGetAllMIDIDevices
+go test -v ./devices -run TestGetMIDI
 
 # Run all tests
 go test -v ./devices
@@ -303,7 +417,7 @@ The library has been tested with real hardware:
 Contributions are welcome! Please ensure all tests pass:
 
 ```bash
-make test-all
+make test-devices
 ```
 
 ## License

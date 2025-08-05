@@ -7,16 +7,16 @@ import (
 	"testing"
 )
 
-func TestGetAllMIDIDevices(t *testing.T) {
+func TestGetMIDI(t *testing.T) {
 	fmt.Println("Testing unified MIDI device enumeration...")
 
 	// Enable JSON logging for testing
 	SetJSONLogging(true)
 	defer SetJSONLogging(false)
 
-	devices, err := GetAllMIDIDevices()
+	devices, err := GetMIDI()
 	if err != nil {
-		t.Fatalf("Error getting all MIDI devices: %v", err)
+		t.Fatalf("Error getting MIDI devices: %v", err)
 	}
 
 	fmt.Printf("Found %d unified MIDI devices\n", len(devices))
@@ -79,9 +79,9 @@ func TestMIDIDeviceFilters(t *testing.T) {
 	fmt.Println("Testing MIDI device filter methods...")
 
 	// Get all devices first
-	allDevices, err := GetAllMIDIDevices()
+	allDevices, err := GetMIDI()
 	if err != nil {
-		t.Fatalf("Error getting all MIDI devices: %v", err)
+		t.Fatalf("Error getting MIDI devices: %v", err)
 	}
 
 	if len(allDevices) == 0 {

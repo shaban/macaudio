@@ -167,7 +167,7 @@ func TestAudioDeviceCompatibilityWithRealDevices(t *testing.T) {
 	t.Log("Testing compatibility methods with real audio devices...")
 
 	// Get real devices for integration testing
-	audioDevices, err := GetAllAudioDevices()
+	audioDevices, err := GetAudio()
 	if err != nil {
 		t.Fatalf("Failed to get audio devices: %v", err)
 	}

@@ -321,8 +321,8 @@ type AudioDeviceResult struct {
 	TotalDevicesScanned int           `json:"totalDevicesScanned"`
 }
 
-// GetAllAudioDevices returns all audio devices with unified input/output capabilities
-func GetAllAudioDevices() (AudioDevices, error) {
+// GetAudio returns all audio devices with unified input/output capabilities
+func GetAudio() (AudioDevices, error) {
 	result := C.getAudioDevices()
 	defer C.free(unsafe.Pointer(result))
 
@@ -345,8 +345,8 @@ func GetAllAudioDevices() (AudioDevices, error) {
 	return AudioDevices(deviceResult.Devices), nil
 }
 
-// GetAllMIDIDevices returns all MIDI devices with unified input/output capabilities
-func GetAllMIDIDevices() (MIDIDevices, error) {
+// GetMIDI returns all MIDI devices with unified input/output capabilities
+func GetMIDI() (MIDIDevices, error) {
 	cDeviceList := C.getMIDIDevices()
 	defer C.free(unsafe.Pointer(cDeviceList))
 
