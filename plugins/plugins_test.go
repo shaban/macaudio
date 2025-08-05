@@ -298,6 +298,9 @@ func TestQuickScanPerformance(t *testing.T) {
 	start = time.Now()
 	fullPlugins, err := GetPluginsWithTimeout(2.0) // Short timeout
 	shortIntrospectionDuration := time.Since(start)
+	if err != nil {
+		t.Logf("Note: Short introspection timeout (expected): %v", err)
+	}
 
 	t.Logf("Partial introspection: %d plugins in %v", len(fullPlugins), shortIntrospectionDuration)
 
