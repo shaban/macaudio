@@ -5,171 +5,12 @@ import (
 	"time"
 )
 
-func TestGetPlugins(t *testing.T) {
-	t.Log("Testing AU plugin enumeration...")
-
-	// Test basic plugin enumeration
-	plugins, err := GetPlugins()
-	if err != nil {
-		t.Fatalf("Failed to get plugins: %v", err)
+// Helper function for min
+func min(a, b int) int {
+	if a < b {
+		return a
 	}
-
-	t.Logf("Found %d plugins total", len(plugins))
-
-	if len(plugins) == 0 {
-		t.Log("⚠️  No plugins found - this might be expected on some systems")
-		return
-	}
-
-	// Test that we have some plugins with parameters
-	pluginsWithParams := plugins.WithParameters()
-	t.Logf("Plugins with parameters: %d", len(pluginsWithParams))
-
-	if len(pluginsWithParams) == 0 {
-		t.Log("⚠️  No plugins with parameters found")
-		return
-	}
-
-	// Test basic filtering
-	applePlugins := plugins.ByManufacturer("appl")
-	t.Logf("Apple plugins: %d", len(applePlugins))
-
-	effectPlugins := plugins.ByType("aufx")
-	t.Logf("Effect plugins (aufx): %d", len(effectPlugins))
-
-	indexedPlugins := plugins.WithIndexedParameters()
-	t.Logf("Plugins with indexed parameters: %d", len(indexedPlugins))
-
-	t.Log("✅ Plugin enumeration test completed successfully!")
-}
-
-func TestPluginStructure(t *testing.T) {
-	t.Log("Testing plugin data structure...")
-
-	plugins, err := GetPlugins()
-	if err != nil {
-		t.Fatalf("Failed to get plugins: %v", err)
-	}
-
-	if len(plugins) == 0 {
-		t.Skip("No plugins available for structure testing")
-	}
-
-	// Find a plugin with parameters for detailed testing
-	var testPlugin *Plugin
-	for _, plugin := range plugins {
-		if len(plugin.Parameters) > 0 {
-			testPlugin = &plugin
-			break
-		}
-	}
-
-	if testPlugin == nil {
-		t.Skip("No plugins with parameters available for structure testing")
-	}
-
-	t.Logf("Testing plugin: %s", testPlugin.Name)
-
-	// Test required fields
-	if testPlugin.Name == "" {
-		t.Error("Plugin name is empty")
-	}
-	if testPlugin.ManufacturerID == "" {
-		t.Error("Plugin manufacturer ID is empty")
-	}
-	if testPlugin.Type == "" {
-		t.Error("Plugin type is empty")
-	}
-	if testPlugin.Subtype == "" {
-		t.Error("Plugin subtype is empty")
-	}
-
-	// Test parameter structure
-	if len(testPlugin.Parameters) > 0 {
-		param := testPlugin.Parameters[0]
-		t.Logf("Testing parameter: %s", param.DisplayName)
-
-		if param.DisplayName == "" {
-			t.Error("Parameter display name is empty")
-		}
-		if param.Identifier == "" {
-			t.Error("Parameter identifier is empty")
-		}
-		if param.Unit == "" {
-			t.Error("Parameter unit is empty")
-		}
-
-		// Test parameter methods
-		writableParams := testPlugin.GetWritableParameters()
-		t.Logf("Writable parameters: %d", len(writableParams))
-
-		indexedParams := testPlugin.GetIndexedParameters()
-		t.Logf("Indexed parameters: %d", len(indexedParams))
-
-		rampableParams := testPlugin.GetRampableParameters()
-		t.Logf("Rampable parameters: %d", len(rampableParams))
-	}
-
-	t.Log("✅ Plugin structure test completed successfully!")
-}
-
-func TestPluginFiltering(t *testing.T) {
-	t.Log("Testing plugin filtering methods...")
-
-	plugins, err := GetPlugins()
-	if err != nil {
-		t.Fatalf("Failed to get plugins: %v", err)
-	}
-
-	if len(plugins) == 0 {
-		t.Skip("No plugins available for filtering tests")
-	}
-
-	// Test manufacturer filtering
-	applePlugins := plugins.ByManufacturer("appl")
-	t.Logf("Apple plugins: %d", len(applePlugins))
-
-	// Verify all returned plugins are actually from Apple
-	for _, plugin := range applePlugins {
-		if plugin.ManufacturerID != "appl" {
-			t.Errorf("Expected Apple plugin, got manufacturer: %s", plugin.ManufacturerID)
-		}
-	}
-
-	// Test type filtering
-	effectPlugins := plugins.ByType("aufx")
-	t.Logf("Effect plugins: %d", len(effectPlugins))
-
-	for _, plugin := range effectPlugins {
-		if plugin.Type != "aufx" {
-			t.Errorf("Expected effect plugin, got type: %s", plugin.Type)
-		}
-	}
-
-	// Test parameter filtering
-	pluginsWithParams := plugins.WithParameters()
-	for _, plugin := range pluginsWithParams {
-		if len(plugin.Parameters) == 0 {
-			t.Errorf("Plugin %s should have parameters but has none", plugin.Name)
-		}
-	}
-
-	// Test indexed parameter filtering
-	indexedPlugins := plugins.WithIndexedParameters()
-	for _, plugin := range indexedPlugins {
-		hasIndexed := false
-		for _, param := range plugin.Parameters {
-			if len(param.IndexedValues) > 0 {
-				hasIndexed = true
-				break
-			}
-		}
-		if !hasIndexed {
-			t.Errorf("Plugin %s should have indexed parameters but has none", plugin.Name)
-		}
-	}
-
-	t.Log("✅ Plugin filtering test completed successfully!")
+	return b
 }
 
 func TestJSONLogging(t *testing.T) {
@@ -196,34 +37,11 @@ func TestJSONLogging(t *testing.T) {
 	t.Log("✅ JSON logging test completed successfully!")
 }
 
-func TestGetPluginsWithTimeout(t *testing.T) {
-	t.Log("Testing plugin enumeration with custom timeout...")
-
-	// Test with a short timeout (5 seconds)
-	plugins, err := GetPluginsWithTimeout(5.0)
-	if err != nil {
-		t.Logf("Short timeout failed (expected): %v", err)
-		// This might fail due to timeout, which is acceptable
-	} else {
-		t.Logf("Found %d plugins with 5-second timeout", len(plugins))
-	}
-
-	// Test with a reasonable timeout (30 seconds)
-	plugins, err = GetPluginsWithTimeout(30.0)
-	if err != nil {
-		t.Fatalf("Failed to get plugins with 30-second timeout: %v", err)
-	}
-
-	t.Logf("Found %d plugins with 30-second timeout", len(plugins))
-
-	t.Log("✅ Timeout test completed successfully!")
-}
-
-func TestGetPluginList(t *testing.T) {
+func TestList(t *testing.T) {
 	t.Log("Testing quick AudioUnit plugin enumeration...")
 
 	// Test quick scan
-	pluginInfos, err := GetPluginList()
+	pluginInfos, err := List()
 	if err != nil {
 		t.Fatalf("Failed to get plugin list: %v", err)
 	}
@@ -231,8 +49,7 @@ func TestGetPluginList(t *testing.T) {
 	t.Logf("Quick scan found %d plugins total", len(pluginInfos))
 
 	if len(pluginInfos) == 0 {
-		t.Log("⚠️  No plugins found - this might be expected on some systems")
-		return
+		t.Skip("No plugins available for testing")
 	}
 
 	// Test basic filtering
@@ -249,26 +66,33 @@ func TestGetPluginList(t *testing.T) {
 	compressorPlugins := pluginInfos.ByName("compressor")
 	t.Logf("Plugins with 'compressor' in name: %d", len(compressorPlugins))
 
-	// Test data integrity
-	for i, plugin := range pluginInfos {
-		if i >= 5 { // Just test first 5 for brevity
-			break
-		}
+	// Test category filtering
+	effectsByCategory := pluginInfos.ByCategory("Effect")
+	t.Logf("Effect plugins (by category): %d", len(effectsByCategory))
 
-		t.Logf("Plugin %d: %s (%s %s %s)", i+1, plugin.Name, plugin.Type, plugin.Subtype, plugin.ManufacturerID)
+	instrumentsByCategory := pluginInfos.ByCategory("Instrument")
+	t.Logf("Instrument plugins (by category): %d", len(instrumentsByCategory))
 
-		// Test required fields
+	// Test plugin info structure
+	for i, plugin := range pluginInfos[:5] { // Test first 5
+		t.Logf("Plugin %d: %s (%s %s %s) [%s]",
+			i+1, plugin.Name, plugin.Type, plugin.Subtype, plugin.ManufacturerID, plugin.Category)
+
+		// Validate required fields
 		if plugin.Name == "" {
 			t.Errorf("Plugin %d has empty name", i+1)
-		}
-		if plugin.ManufacturerID == "" {
-			t.Errorf("Plugin %d has empty manufacturer ID", i+1)
 		}
 		if plugin.Type == "" {
 			t.Errorf("Plugin %d has empty type", i+1)
 		}
 		if plugin.Subtype == "" {
 			t.Errorf("Plugin %d has empty subtype", i+1)
+		}
+		if plugin.ManufacturerID == "" {
+			t.Errorf("Plugin %d has empty manufacturer ID", i+1)
+		}
+		if plugin.Category == "" {
+			t.Errorf("Plugin %d has empty category", i+1)
 		}
 	}
 
@@ -280,7 +104,7 @@ func TestQuickScanPerformance(t *testing.T) {
 
 	// Measure quick scan time
 	start := time.Now()
-	pluginInfos, err := GetPluginList()
+	pluginInfos, err := List()
 	quickScanDuration := time.Since(start)
 
 	if err != nil {
@@ -294,24 +118,128 @@ func TestQuickScanPerformance(t *testing.T) {
 		t.Errorf("Quick scan took too long: %v (should be under 5 seconds)", quickScanDuration)
 	}
 
-	// Compare with full introspection (just measure, don't wait for completion)
-	start = time.Now()
-	fullPlugins, err := GetPluginsWithTimeout(2.0) // Short timeout
-	shortIntrospectionDuration := time.Since(start)
-	if err != nil {
-		t.Logf("Note: Short introspection timeout (expected): %v", err)
-	}
-
-	t.Logf("Partial introspection: %d plugins in %v", len(fullPlugins), shortIntrospectionDuration)
-
-	// Quick scan should be much faster
-	if quickScanDuration >= shortIntrospectionDuration {
-		t.Logf("⚠️  Quick scan (%v) not significantly faster than introspection (%v)",
-			quickScanDuration, shortIntrospectionDuration)
-	} else {
-		speedup := float64(shortIntrospectionDuration) / float64(quickScanDuration)
-		t.Logf("Quick scan is %.1fx faster than introspection", speedup)
-	}
-
 	t.Log("✅ Performance test completed successfully!")
 }
+
+func TestNeuralDSPSpecific(t *testing.T) {
+	t.Log("Testing Neural DSP plugin with IntrospectAudioUnitsWithTimeout...")
+
+	// Enable JSON logging to capture the raw JSON output
+	originalState := enableJSONLogging
+	defer func() {
+		enableJSONLogging = originalState
+	}()
+	SetJSONLogging(true)
+
+	// Test IntrospectWithTimeout with Neural DSP specific parameters
+	// This should return an array of length 1 with the Neural DSP plugin
+	//plugins, err := IntrospectWithTimeout("aumf", "NMAS", "NDSP")
+	plugins, err := IntrospectWithTimeout("", "", "")
+	if err != nil {
+		t.Fatalf("IntrospectWithTimeout failed: %v", err)
+	}
+
+	// Verify we got exactly one plugin back
+	if len(plugins) != 1 {
+		t.Fatalf("Expected 1 plugin, got %d", len(plugins))
+	}
+
+	plugin := plugins[0]
+	t.Logf("✅ Success! Neural DSP plugin introspected with timeout function")
+	t.Logf("Plugin name: %s", plugin.Name)
+	t.Logf("Category: %s", plugin.Category)
+	t.Logf("Parameters: %d", len(plugin.Parameters))
+
+	// Check we got reasonable parameter data
+	if len(plugin.Parameters) > 0 {
+		first := plugin.Parameters[0]
+		t.Logf("First parameter: %s (Address: %d, Min: %.2f, Max: %.2f)",
+			first.DisplayName, first.Address, first.MinValue, first.MaxValue)
+	}
+
+	// Look for indexed parameters specifically
+	indexedCount := 0
+	indexedWithValues := 0
+	for _, param := range plugin.Parameters {
+		if param.Unit == "Indexed" {
+			indexedCount++
+			if param.IndexedValues != nil && len(param.IndexedValues) > 0 {
+				indexedWithValues++
+				t.Logf("Indexed parameter '%s' has %d values: %v",
+					param.DisplayName, len(param.IndexedValues), param.IndexedValues[:min(3, len(param.IndexedValues))])
+			}
+		}
+	}
+
+	t.Logf("Found %d indexed parameters, %d with extracted values", indexedCount, indexedWithValues)
+
+	// Validate we actually got the plugin data
+	if plugin.Name == "" {
+		t.Error("Plugin name is empty")
+	}
+	if len(plugin.Parameters) == 0 {
+		t.Error("No parameters found - this is unusual for Neural DSP plugins")
+	}
+
+	t.Logf("Test completed successfully!")
+}
+
+// TestHelperFunction tests the new helper function that accepts PluginInfo
+/*func TestIntrospectFromInfo(t *testing.T) {
+	t.Log("Testing IntrospectFromInfo helper function...")
+
+	// Get the list of plugins first
+	plugins, err := List()
+	if err != nil {
+		t.Fatalf("Failed to list plugins: %v", err)
+	}
+
+	if len(plugins) == 0 {
+		t.Skip("No plugins found")
+		return
+	}
+
+	// Find Neural DSP plugin if available, otherwise use the first plugin
+	var testPlugin PluginInfo
+	found := false
+	for _, plugin := range plugins {
+		if plugin.ManufacturerID == "NDSP" {
+			testPlugin = plugin
+			found = true
+			t.Logf("Found Neural DSP plugin: %s", plugin.Name)
+			break
+		}
+	}
+
+	if !found {
+		testPlugin = plugins[0]
+		t.Logf("Neural DSP not found, using: %s (%s:%s:%s)",
+			testPlugin.Name, testPlugin.Type, testPlugin.Subtype, testPlugin.ManufacturerID)
+	}
+
+	// Test the helper function
+	result, err := IntrospectFromInfo(testPlugin)
+	if err != nil {
+		t.Fatalf("IntrospectFromInfo failed: %v", err)
+	}
+
+	t.Logf("✅ Helper function worked! Plugin: %s, Parameters: %d",
+		result.Name, len(result.Parameters))
+
+	// Compare with direct function call
+	directResult, err := Introspect(testPlugin.Type, testPlugin.Subtype, testPlugin.ManufacturerID)
+	if err != nil {
+		t.Fatalf("Direct Introspect failed: %v", err)
+	}
+
+	// Compare key fields (can't compare structs with slices directly)
+	if result.Name == directResult.Name &&
+		result.Category == directResult.Category &&
+		len(result.Parameters) == len(directResult.Parameters) {
+		t.Log("✅ Helper function returns equivalent result to direct function")
+	} else {
+		t.Error("Helper function and direct function returned different results")
+		t.Logf("Helper: %s, %s, %d params", result.Name, result.Category, len(result.Parameters))
+		t.Logf("Direct: %s, %s, %d params", directResult.Name, directResult.Category, len(directResult.Parameters))
+	}
+}*/

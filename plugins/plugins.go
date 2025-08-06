@@ -8,16 +8,12 @@ package plugins
 #cgo LDFLAGS: -framework Foundation -framework AudioToolbox -framework AVFoundation -framework AudioUnit
 #include "native/plugins.m"
 #include <stdlib.h>
-
-// Define the external variable that the Objective-C code expects
-int g_verboseLogging = 0;  // 0 = silent, 1 = verbose
+#include <string.h>
 
 // Declare the functions so CGO can find them
-char *IntrospectAudioUnitsWithTimeout(double timeoutSeconds);
 char *QuickScanAudioUnits(void);
-
-// Expose the variable so Go can modify it
-extern int g_verboseLogging;
+char *IntrospectAudioUnits(const char *type, const char *subtype, const char *manufacturerID);
+void SetVerboseLogging(int enabled);
 */
 import "C"
 import (
@@ -33,11 +29,11 @@ var enableJSONLogging = false
 // SetJSONLogging enables or disables JSON logging for debugging
 func SetJSONLogging(enabled bool) {
 	enableJSONLogging = enabled
-	// Also control native logging for consistency (like devices package)
+	// Use the setter function instead of direct variable access
 	if enabled {
-		C.g_verboseLogging = 1
+		C.SetVerboseLogging(1)
 	} else {
-		C.g_verboseLogging = 0
+		C.SetVerboseLogging(0)
 	}
 }
 
@@ -47,6 +43,7 @@ type PluginInfo struct {
 	ManufacturerID string `json:"manufacturerID"`
 	Type           string `json:"type"`
 	Subtype        string `json:"subtype"`
+	Category       string `json:"category"`
 }
 
 // QuickScanResponse represents the response from quick scan (like devices pattern)
@@ -68,6 +65,7 @@ type Plugin struct {
 	ManufacturerID string      `json:"manufacturerID"`
 	Type           string      `json:"type"`
 	Subtype        string      `json:"subtype"`
+	Category       string      `json:"category"`
 	Parameters     []Parameter `json:"parameters"`
 }
 
@@ -93,36 +91,8 @@ type Parameter struct {
 // Plugins represents a collection of Plugin objects with filtering methods
 type Plugins []Plugin
 
-// GetPlugins returns all available AudioUnit plugins with their parameters
-func GetPlugins() (Plugins, error) {
-	return GetPluginsWithTimeout(30.0) // Default 30-second timeout
-}
-
-// GetPluginsWithTimeout returns all available AudioUnit plugins with a specified timeout
-func GetPluginsWithTimeout(timeoutSeconds float64) (Plugins, error) {
-	cPluginList := C.IntrospectAudioUnitsWithTimeout(C.double(timeoutSeconds))
-	if cPluginList == nil {
-		return nil, fmt.Errorf("failed to introspect AudioUnit plugins")
-	}
-	defer C.free(unsafe.Pointer(cPluginList))
-
-	jsonData := C.GoString(cPluginList)
-
-	// JSON logging when enabled (follows devices pattern)
-	if enableJSONLogging {
-		fmt.Printf("🔍 Plugin Data JSON: %s\n", jsonData)
-	}
-
-	var plugins []Plugin
-	if err := json.Unmarshal([]byte(jsonData), &plugins); err != nil {
-		return nil, fmt.Errorf("failed to parse plugin data: %v", err)
-	}
-
-	return Plugins(plugins), nil
-}
-
-// GetPluginList returns a quick enumeration of all available AudioUnit plugins (no parameters)
-func GetPluginList() (PluginInfos, error) {
+// List returns a quick enumeration of all available AudioUnit plugins (no parameters)
+func List() (PluginInfos, error) {
 	cPluginList := C.QuickScanAudioUnits()
 	if cPluginList == nil {
 		return nil, fmt.Errorf("failed to scan AudioUnit plugins")
@@ -193,6 +163,17 @@ func (infos PluginInfos) ByName(namePattern string) PluginInfos {
 	var filtered PluginInfos
 	for _, info := range infos {
 		if matchesPattern(info.Name, namePattern) {
+			filtered = append(filtered, info)
+		}
+	}
+	return filtered
+}
+
+// ByCategory returns plugin infos of a specific category (e.g., "Effect", "Instrument", "Mixer")
+func (infos PluginInfos) ByCategory(category string) PluginInfos {
+	var filtered PluginInfos
+	for _, info := range infos {
+		if info.Category == category {
 			filtered = append(filtered, info)
 		}
 	}
@@ -358,4 +339,87 @@ func (plugin Plugin) WritableParameterCount() int {
 		}
 	}
 	return count
+}
+
+/*
+// Introspect introspects a specific AudioUnit plugin by its identifiers
+func Introspect(pluginType, subtype, manufacturerID string) (Plugin, error) {
+	cType := C.CString(pluginType)
+	defer C.free(unsafe.Pointer(cType))
+
+	cSubtype := C.CString(subtype)
+	defer C.free(unsafe.Pointer(cSubtype))
+
+	cManufacturerID := C.CString(manufacturerID)
+	defer C.free(unsafe.Pointer(cManufacturerID))
+
+	cResult := C.Introspect(cType, cSubtype, cManufacturerID)
+	if cResult == nil {
+		return Plugin{}, fmt.Errorf("failed to introspect plugin %s:%s:%s", pluginType, subtype, manufacturerID)
+	}
+	defer C.free(unsafe.Pointer(cResult))
+
+	jsonData := C.GoString(cResult)
+
+	// JSON logging when enabled (follows devices pattern)
+	if enableJSONLogging {
+		fmt.Printf("🔍 Introspect JSON: %s\n", jsonData)
+	}
+
+	// Parse JSON into Plugin struct
+	var plugin Plugin
+	if err := json.Unmarshal([]byte(jsonData), &plugin); err != nil {
+		return Plugin{}, fmt.Errorf("failed to parse plugin data: %v", err)
+	}
+
+	return plugin, nil
+}
+
+// IntrospectFromInfo is a helper function that accepts a PluginInfo object
+// This provides a more user-friendly API for introspecting plugins
+func IntrospectFromInfo(plugin PluginInfo) (Plugin, error) {
+	return Introspect(plugin.Type, plugin.Subtype, plugin.ManufacturerID)
+}
+*/
+
+// IntrospectWithTimeout uses the new timeout-based function for testing
+// Returns an array of plugins matching the filter criteria
+func IntrospectWithTimeout(pluginType, subtype, manufacturerID string) ([]Plugin, error) {
+	var cType, cSubtype, cManufacturerID *C.char
+
+	if pluginType != "" {
+		cType = C.CString(pluginType)
+		defer C.free(unsafe.Pointer(cType))
+	}
+
+	if subtype != "" {
+		cSubtype = C.CString(subtype)
+		defer C.free(unsafe.Pointer(cSubtype))
+	}
+
+	if manufacturerID != "" {
+		cManufacturerID = C.CString(manufacturerID)
+		defer C.free(unsafe.Pointer(cManufacturerID))
+	}
+
+	cResult := C.IntrospectAudioUnits(cType, cSubtype, cManufacturerID)
+	if cResult == nil {
+		return nil, fmt.Errorf("failed to introspect plugins with timeout")
+	}
+	defer C.free(unsafe.Pointer(cResult))
+
+	jsonData := C.GoString(cResult)
+
+	// JSON logging when enabled
+	if enableJSONLogging {
+		fmt.Printf("🔍 IntrospectWithTimeout JSON: %s\n", jsonData)
+	}
+
+	// Parse JSON into array of Plugin structs
+	var plugins []Plugin
+	if err := json.Unmarshal([]byte(jsonData), &plugins); err != nil {
+		return nil, fmt.Errorf("failed to parse plugins array: %v", err)
+	}
+
+	return plugins, nil
 }

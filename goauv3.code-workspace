@@ -1,0 +1,38 @@
+{
+    "folders": [
+        {
+            "name": "Root",
+            "path": "."
+        },
+        {
+            "name": "Devices Package", 
+            "path": "./devices"
+        },
+        {
+            "name": "Plugins Package",
+            "path": "./plugins"
+        }
+    ],
+    "settings": {
+        "go.useLanguageServer": true,
+        "go.buildFlags": ["-tags=darwin,cgo"],
+        "gopls": {
+            "build.buildFlags": ["-tags=darwin,cgo"],
+            "build.env": {
+                "CGO_ENABLED": "1"
+            }
+        },
+        "files.watcherExclude": {
+            "**/.git/objects/**": true,
+            "**/.git/subtree-cache/**": true,
+            "**/node_modules/**": true,
+            "**/.vscode/**": true
+        }
+    },
+    "extensions": {
+        "recommendations": [
+            "golang.go",
+            "github.copilot"
+        ]
+    }
+}
