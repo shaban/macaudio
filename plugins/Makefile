@@ -3,33 +3,35 @@
 
 .PHONY: test-native test-go test-all clean help
 
-# Test the native plugin introspection only
-test-native:
-	@echo "🔧 Building native AU plugin test..."
-	gcc -o test_native native/plugins.m \
+clean:
+	@echo "🧹 Cleaning all build artifacts..."
+	rm -f test_native test_static test_obj test_go_wrapper
+	rm -f native/*.o native/*.a
+	rm -f *.o *.a
+	go clean -cache
+	go clean -testcache
+	@echo "✅ Clean complete"
+
+# Native-only targets (don't mix with CGO)
+lib-native: clean
+	@echo "🔧 Building static library (native only)..."
+	gcc -c native/plugins.m -o native/plugins.o \
 		-framework Foundation \
 		-framework AudioToolbox \
 		-framework AVFoundation \
 		-framework AudioUnit \
 		-ObjC
-	@echo "🚀 Running native AU plugin introspection..."
-	./test_native
+	ar rcs native/libplugins.a native/plugins.o
 
 # Test the Go CGO wrapper
-test-go:
+test-go: clean
 	@echo "🧪 Testing Go CGO wrapper for AU plugins..."
 	go test -v
 	@echo "✅ Go wrapper test complete"
 
 # Test both native and Go wrapper
-test-all: test-go
+test-all: clean test-go
 	@echo "✅ All plugin tests complete"
-
-# Clean up
-clean:
-	@echo "🧹 Cleaning test files..."
-	rm -f test_native test_go_wrapper
-	@echo "✅ Clean complete"
 
 # Help
 help:

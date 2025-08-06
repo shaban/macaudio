@@ -5,6 +5,9 @@
 
 // Global verbose logging variable (defined here, not extern)
 int g_verboseLogging = 0;  // Default to silent
+double g_preset_loading_timeout = 0.0; // Default timeout for preset loading in seconds
+double g_process_update_timeout = 0.0; // Default timeout for process update in seconds
+double g_total_timeout = 1.0; // Default total timeout for all operations in seconds
 
 // Setter function for verbose logging
 void SetVerboseLogging(int enabled) {
@@ -179,7 +182,7 @@ NSString* StringFromAudioUnitParameterUnit(AudioUnitParameterUnit unit) {
         audioUnit.currentPreset = audioUnit.factoryPresets.firstObject;
 
         // Wait for preset to load
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(g_preset_loading_timeout * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             [self simulateAudioProcessing:audioUnit completion:completionBlock];
         });
     } else {
@@ -232,7 +235,7 @@ NSString* StringFromAudioUnitParameterUnit(AudioUnitParameterUnit unit) {
     }
 
     // Give the plugin time to process and update parameters
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(g_process_update_timeout * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         completionBlock();
     });
 }
@@ -512,7 +515,7 @@ char *IntrospectAudioUnits(const char *type,
         PROGRESS_LOG("Waiting for all AudioUnit inspections to complete...\n");
         
         // Wait with a 30-second timeout to prevent hanging during development
-        dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(30.0 * NSEC_PER_SEC));
+        dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(g_total_timeout * NSEC_PER_SEC));
         long result = dispatch_group_wait(group, timeout);
         
         if (result != 0) {

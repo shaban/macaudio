@@ -1,0 +1,10 @@
+=== RUN   TestNeuralDSPSpecific
+    plugins_test.go:118: Testing specific Neural DSP plugin that was causing crashes...
+    plugins_test.go:134: ✅ Success! Neural DSP plugin introspected with new API
+    plugins_test.go:135: Plugin name: Neural DSP: Morgan Amps Suite
+    plugins_test.go:136: Category: Music Effect
+    plugins_test.go:137: Parameters: 128
+    plugins_test.go:142: First parameter: Input Gain (Address: 0, Min: 0.00, Max: 1.00)
+--- PASS: TestNeuralDSPSpecific (1.88s)
+PASS
+ok  	github.com/shaban/goauv3/plugins	2.069s

@@ -1,0 +1,11 @@
+=== RUN   TestNeuralDSPSpecific
+    plugins_test.go:117: Testing specific Neural DSP plugin introspection...
+    plugins_test.go:145: ✅ Success! Neural DSP plugin introspected with new API
+    plugins_test.go:146: Plugin name: Neural DSP: Morgan Amps Suite
+    plugins_test.go:147: Category: Music Effect
+    plugins_test.go:148: Parameters: 128
+    plugins_test.go:153: First parameter: Input Gain (Address: 0, Min: 0.00, Max: 1.00)
+    plugins_test.go:165: Test completed successfully!
+--- PASS: TestNeuralDSPSpecific (1.88s)
+PASS
+ok  	github.com/shaban/goauv3/plugins	2.109s
