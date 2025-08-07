@@ -1,3 +1,3 @@
-module github.com/shaban/goauv3
+module github.com/shaban/macaudio
 
 go 1.24.5

@@ -1,18 +1,21 @@
-# macaudio - macOS Audio/MIDI Device Library
+# macaudio - macOS Audio/MIDI Device & AudioUnit Plugin Library
 
-A silent, Go library for enumerating macOS Core Audio and Core MIDI devices with configurable JSON logging.
+A silent, Go library for enumerating macOS Core Audio and Core MIDI devices, and introspecting AudioUnit plugins with configurable JSON logging.
 
 ## Features
 
 - **Complete Audio Device Enumeration**: Get all audio devices with input/output capabilities, sample rates, bit depths, device types, and transport types
-- **Advanced MIDI Device Hierarchy**: Full 3-level MIDI enumeration (devices → entities → endpoints) with manufacturer details, display names, and SysEx capabilities  
+- **Advanced MIDI Device Hierarchy**: Full 3-level MIDI enumeration (devices → entities → endpoints) with manufacturer details, display names, and SysEx capabilities
+- **AudioUnit Plugin Introspection**: Enumerate and introspect AudioUnit plugins with full parameter metadata and filtering capabilities
+- **Method-Based Plugin API**: Modern Go API with both synchronous method-based and function-based introspection
 - **Silent Library Design**: No unwanted logging output by default - perfect for production use
 - **Configurable JSON Logging**: Enable detailed JSON logging for debugging and development
-- **Unified Device Structure**: Both audio and MIDI devices follow consistent error handling patterns
-- **Rich Filtering Methods**: Built-in filters for device capabilities, types, and status
+- **Unified Structure**: Audio devices, MIDI devices, and plugins all follow consistent error handling patterns
+- **Rich Filtering Methods**: Built-in filters for device capabilities, plugin types, and status
 
 ## Quick Start
 
+### Device Discovery
 ```go
 package main
 
@@ -20,7 +23,7 @@ import (
     "fmt"
     "log"
     
-    "macaudio/devices"
+    "github.com/shaban/macaudio/devices"
 )
 
 func main() {
@@ -53,6 +56,41 @@ func main() {
 }
 ```
 
+### Plugin Introspection
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    
+    "github.com/shaban/macaudio/plugins"
+)
+
+func main() {
+    // Get all AudioUnit plugins
+    auPlugins, err := plugins.GetAU()
+    if err != nil {
+        log.Fatal(err)
+    }
+    
+    fmt.Printf("Found %d AudioUnit plugins\n", len(auPlugins))
+    
+    // Filter for instruments only
+    instruments := auPlugins.Instruments()
+    fmt.Printf("Instruments: %d\n", len(instruments))
+    
+    // Get parameter details for the first plugin
+    if len(auPlugins) > 0 {
+        params, err := auPlugins[0].GetParameters()
+        if err == nil {
+            fmt.Printf("Plugin '%s' has %d parameters\n", 
+                auPlugins[0].Name, len(params))
+        }
+    }
+}
+```
+
 ## Installation
 
 ```bash
@@ -62,7 +100,7 @@ go get github.com/shaban/macaudio
 ## Audio Device Example
 
 ```go
-import "macaudio/devices"
+import "github.com/shaban/macaudio/devices"
 
 // Get audio devices with rich capabilities
 audioDevices, err := devices.GetAudio()
@@ -117,6 +155,213 @@ bossMIDI := midiDevices.ByManufacturer("BOSS Corporation")
 katanaMIDI := midiDevices.ByModel("KATANA")
 inputDevices := midiDevices.Inputs()
 outputDevices := midiDevices.Outputs()
+```
+
+## AudioUnit Plugin Example
+
+```go
+import "github.com/shaban/macaudio/plugins"
+
+// Get all AudioUnit plugins with quick scan
+pluginInfos, err := plugins.List()
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Found %d AudioUnit plugins\n", len(pluginInfos))
+
+// Filter examples
+effectPlugins := pluginInfos.ByType("aufx")              // Effects
+instrumentPlugins := pluginInfos.ByType("aumu")          // Instruments
+applePlugins := pluginInfos.ByManufacturer("appl")       // Apple plugins
+compressorPlugins := pluginInfos.ByName("compressor")    // Name search
+
+// Method-based introspection (recommended)
+for _, info := range effectPlugins[:3] { // First 3 effects
+    plugin, err := info.Introspect()
+    if err != nil {
+        continue
+    }
+    
+    fmt.Printf("Plugin: %s\n", plugin.Name)
+    fmt.Printf("  Type: %s (%s)\n", plugin.Type, plugin.Category)
+    fmt.Printf("  Manufacturer: %s\n", plugin.ManufacturerID)
+    fmt.Printf("  Parameters: %d\n", len(plugin.Parameters))
+    
+    // Parameter details
+    for _, param := range plugin.Parameters[:min(3, len(plugin.Parameters))] {
+        fmt.Printf("    %s: %.2f (%.2f-%.2f) %s\n", 
+            param.DisplayName, param.CurrentValue, 
+            param.MinValue, param.MaxValue, param.Unit)
+    }
+}
+
+// Batch introspection for multiple plugins
+instrumentPlugins = instrumentPlugins[:2] // Limit for example
+instruments, err := instrumentPlugins.Introspect()
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Introspected %d instruments with full parameter data\n", len(instruments))
+```
+
+## Plugin Introspection API
+
+The plugins package provides both method-based and function-based APIs:
+
+### Method-Based API (Recommended)
+
+```go
+// Single plugin introspection
+pluginInfo := pluginInfos[0]
+plugin, err := pluginInfo.Introspect()
+if err != nil {
+    log.Fatal(err)
+}
+
+// Multiple plugin introspection
+selectedPlugins := pluginInfos.ByCategory("Effect")[:5]
+plugins, err := selectedPlugins.Introspect()
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Function-Based API
+
+```go
+// Introspect by plugin identifiers
+plugins, err := plugins.Introspect("aufx", "dcmp", "appl") // Apple Compressor
+if err != nil {
+    log.Fatal(err)
+}
+
+// Get all plugins (empty parameters = all)
+allPlugins, err := plugins.Introspect("", "", "")
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+## Plugin Filtering and Analysis
+
+Rich filtering methods for both plugin lists and full plugin data:
+
+```go
+// Plugin info filtering (quick scan data)
+pluginInfos, _ := plugins.List()
+
+effectPlugins := pluginInfos.ByType("aufx")                    // Audio effects
+instrumentPlugins := pluginInfos.ByType("aumu")                // Instruments  
+musicEffectPlugins := pluginInfos.ByType("aumf")               // Music effects
+applePlugins := pluginInfos.ByManufacturer("appl")             // Apple plugins
+izotopePlugins := pluginInfos.ByManufacturer("iZtp")           // iZotope plugins
+delayPlugins := pluginInfos.ByName("delay")                    // Name contains "delay"
+effectCategory := pluginInfos.ByCategory("Effect")             // Effect category
+
+// Full plugin filtering (after introspection)
+allPlugins, _ := plugins.Introspect("", "", "")
+
+pluginsWithParams := allPlugins.WithParameters()                // Has parameters
+indexedPlugins := allPlugins.WithIndexedParameters()            // Has dropdown/list params
+appleInstruments := allPlugins.ByManufacturer("appl").ByType("aumu")
+
+// Parameter analysis for individual plugins
+for _, plugin := range allPlugins {
+    writableParams := plugin.GetWritableParameters()            // User-controllable
+    rampableParams := plugin.GetRampableParameters()            // Automatable
+    booleanParams := plugin.GetParametersByUnit("Boolean")      // On/off switches
+    indexedParams := plugin.GetIndexedParameters()              // Dropdowns/lists
+    
+    fmt.Printf("%s: %d writable, %d automatable, %d boolean, %d indexed\n",
+        plugin.Name, len(writableParams), len(rampableParams), 
+        len(booleanParams), len(indexedParams))
+}
+```
+
+## Plugin Parameter Details
+
+AudioUnit parameters include comprehensive metadata:
+
+```go
+plugin, _ := pluginInfo.Introspect()
+
+for _, param := range plugin.Parameters {
+    fmt.Printf("Parameter: %s\n", param.DisplayName)
+    fmt.Printf("  Value: %.3f (default: %.3f)\n", param.CurrentValue, param.DefaultValue)
+    fmt.Printf("  Range: %.3f to %.3f\n", param.MinValue, param.MaxValue)
+    fmt.Printf("  Unit: %s\n", param.Unit)                     // Hz, dB, Percent, etc.
+    fmt.Printf("  Address: %d\n", param.Address)               // For automation
+    fmt.Printf("  Writable: %v\n", param.IsWritable)           // User controllable
+    fmt.Printf("  Automatable: %v\n", param.CanRamp)           // DAW automation
+    fmt.Printf("  Raw Flags: 0x%X\n", param.RawFlags)          // AudioUnit flags
+    
+    // Indexed parameters (dropdowns, lists)
+    if len(param.IndexedValues) > 0 {
+        fmt.Printf("  Options: %v\n", param.IndexedValues)
+        fmt.Printf("  Current Option: %s\n", param.IndexedValues[int(param.CurrentValue)])
+    }
+}
+```
+
+## Plugin Categories and Types
+
+AudioUnit plugins are organized by type and category:
+
+### Plugin Types
+- **`aufx`**: Audio Effects (reverb, delay, EQ, compressor)
+- **`aumu`**: Instruments (synths, samplers, drum machines)
+- **`aumf`**: Music Effects (guitar amps, vocal processors)
+- **`aumx`**: Mixers (channel strips, spatial audio)
+- **`augn`**: Generators (tone generators, noise generators)
+- **`auou`**: Output Units (audio interfaces, system output)
+- **`aufc`**: Format Converters (sample rate, time stretching)
+
+### Common Categories
+- **Effect**: Standard audio effects
+- **Instrument**: Software instruments
+- **Music Effect**: Specialized music processing
+- **Mixer**: Audio mixing and routing
+- **Generator**: Audio/tone generation
+- **Output**: Audio output and interfaces
+
+```go
+// Category-based workflow
+pluginInfos, _ := plugins.List()
+
+// Audio production workflow
+effects := pluginInfos.ByCategory("Effect")
+instruments := pluginInfos.ByCategory("Instrument")
+processors := pluginInfos.ByCategory("Music Effect")
+
+fmt.Printf("Available: %d effects, %d instruments, %d processors\n",
+    len(effects), len(instruments), len(processors))
+
+// Type-based filtering
+audioEffects := pluginInfos.ByType("aufx")        // Standard effects
+softSynths := pluginInfos.ByType("aumu")          // Software instruments
+guitarAmps := pluginInfos.ByType("aumf")          // Guitar/music effects
+```
+
+## Plugin JSON Logging
+
+Enable detailed JSON logging for debugging plugin introspection:
+
+```go
+import "github.com/shaban/macaudio/plugins"
+
+// Enable JSON logging
+plugins.SetJSONLogging(true)
+
+pluginInfos, _ := plugins.List()
+// Outputs: 🔍 Plugin List JSON: {"success":true,"plugins":[...],"pluginCount":152}
+
+plugin, _ := pluginInfos[0].Introspect()
+// Outputs: 🔍 IntrospectWithTimeout JSON: {"success":true,"plugins":[...],"pluginCount":1}
+
+// Disable for production
+plugins.SetJSONLogging(false)
 ```
 
 ## Device Compatibility
@@ -358,15 +603,21 @@ go test -v ./devices
 macaudio/                          # Root package
 ├── LICENSE                        # GNU AGPL v3 License
 ├── README.md                      # This file
-├── go.mod                         # Module: macaudio
+├── go.mod                         # Module: github.com/shaban/macaudio
 ├── Makefile                       # Build and test commands
-└── devices/                       # Device enumeration package
-    ├── devices.go                 # Main API
-    ├── devices_test.go            # Audio device tests
-    ├── midi_test.go               # MIDI device tests
-    ├── unified_test.go            # Combined tests
+├── devices/                       # Device enumeration package
+│   ├── devices.go                 # Main API
+│   ├── devices_test.go            # Audio device tests
+│   ├── midi_test.go               # MIDI device tests
+│   ├── unified_test.go            # Combined tests
+│   └── native/
+│       └── devices.m              # Core Audio/MIDI implementation
+└── plugins/                       # AudioUnit plugin package
+    ├── plugins.go                 # Main API
+    ├── plugins_test.go            # Plugin enumeration tests
+    ├── method_test.go             # Method-based API tests
     └── native/
-        └── devices.m              # Core Audio/MIDI implementation
+        └── plugins.m              # AudioUnit introspection implementation
 ```
 
 ## Architecture
