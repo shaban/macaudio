@@ -5,6 +5,9 @@
 
 // Global verbose logging variable (defined here, not extern)
 int g_verboseLogging = 0;  // Default to silent
+double g_preset_loading_timeout = 0.0; // Default timeout for preset loading in seconds
+double g_process_update_timeout = 0.0; // Default timeout for process update in seconds
+double g_total_timeout = 2.0; // Default total timeout for all operations in seconds
 
 // Setter function for verbose logging
 void SetVerboseLogging(int enabled) {
@@ -77,7 +80,7 @@ NSString* StringFromAudioUnitParameterUnit(AudioUnitParameterUnit unit) {
 - (NSArray *)getIndexedValuesUsingReflection:(AUParameter *)param;
 - (NSArray *)queryParameterAtDifferentStates:(AUParameter *)param audioUnit:(AUAudioUnit *)audioUnit;
 - (BOOL)isPresetParameter:(AUParameter *)param audioUnit:(AUAudioUnit *)audioUnit;
-- (void)initializeNeuralDSPAudioUnit:(AUAudioUnit *)audioUnit completion:(void(^)(void))completionBlock;
+- (void)initializePluginAudioUnit:(AUAudioUnit *)audioUnit completion:(void(^)(void))completionBlock;
 - (void)simulateAudioProcessing:(AUAudioUnit *)audioUnit completion:(void(^)(void))completionBlock;
 - (void)extractIndexedParameterInfo:(AUParameter *)param paramData:(NSMutableDictionary *)paramData audioUnit:(AUAudioUnit *)audioUnit;
 - (void)processParametersForAudioUnit:(AUAudioUnit *)audioUnit withName:(NSString *)auName auParameters:(NSMutableArray *)auParameters;
@@ -170,7 +173,7 @@ NSString* StringFromAudioUnitParameterUnit(AudioUnitParameterUnit unit) {
     return NO;
 }
 
-- (void)initializeNeuralDSPAudioUnit:(AUAudioUnit *)audioUnit completion:(void(^)(void))completionBlock {
+- (void)initializePluginAudioUnit:(AUAudioUnit *)audioUnit completion:(void(^)(void))completionBlock {
     // Set a realistic buffer size
     audioUnit.maximumFramesToRender = 512;
 
@@ -179,7 +182,7 @@ NSString* StringFromAudioUnitParameterUnit(AudioUnitParameterUnit unit) {
         audioUnit.currentPreset = audioUnit.factoryPresets.firstObject;
 
         // Wait for preset to load
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(g_preset_loading_timeout * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             [self simulateAudioProcessing:audioUnit completion:completionBlock];
         });
     } else {
@@ -232,7 +235,7 @@ NSString* StringFromAudioUnitParameterUnit(AudioUnitParameterUnit unit) {
     }
 
     // Give the plugin time to process and update parameters
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(g_process_update_timeout * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         completionBlock();
     });
 }
@@ -352,32 +355,30 @@ NSString* StringFromAudioUnitParameterUnit(AudioUnitParameterUnit unit) {
     for (AUParameter *param in allParameters) {
         BOOL isWritable = (param.flags & kAudioUnitParameterFlag_IsWritable) != 0;
         BOOL canRamp = (param.flags & kAudioUnitParameterFlag_CanRamp) != 0;
+        
+        // Include ALL parameters - don't filter by writability or ramp capability
+        NSMutableDictionary *paramData = [NSMutableDictionary dictionary];
+        [paramData setObject:param.displayName forKey:@"displayName"];
+        [paramData setObject:param.identifier forKey:@"identifier"];
+        [paramData setObject:[NSNumber numberWithUnsignedLongLong:param.address] forKey:@"address"];
+        [paramData setObject:[NSNumber numberWithFloat:param.minValue] forKey:@"minValue"];
+        [paramData setObject:[NSNumber numberWithFloat:param.maxValue] forKey:@"maxValue"];
 
-        // Only include writable or automatable parameters (from your working version)
-        if (isWritable || canRamp) {
-            NSMutableDictionary *paramData = [NSMutableDictionary dictionary];
-            [paramData setObject:param.displayName forKey:@"displayName"];
-            [paramData setObject:param.identifier forKey:@"identifier"];
-            [paramData setObject:[NSNumber numberWithUnsignedLongLong:param.address] forKey:@"address"];
-            [paramData setObject:[NSNumber numberWithFloat:param.minValue] forKey:@"minValue"];
-            [paramData setObject:[NSNumber numberWithFloat:param.maxValue] forKey:@"maxValue"];
+        // For now, use current value as default (we can enhance this later)
+        // Note: Getting true default values requires more complex AudioUnit introspection
+        [paramData setObject:[NSNumber numberWithFloat:param.value] forKey:@"defaultValue"];
+        [paramData setObject:[NSNumber numberWithFloat:param.value] forKey:@"currentValue"];
+        [paramData setObject:StringFromAudioUnitParameterUnit(param.unit) forKey:@"unit"];
+        [paramData setObject:[NSNumber numberWithBool:isWritable] forKey:@"isWritable"];
+        [paramData setObject:[NSNumber numberWithBool:canRamp] forKey:@"canRamp"];
+        [paramData setObject:[NSNumber numberWithUnsignedInteger:param.flags] forKey:@"rawFlags"];
 
-            // For now, use current value as default (we can enhance this later)
-            // Note: Getting true default values requires more complex AudioUnit introspection
-            [paramData setObject:[NSNumber numberWithFloat:param.value] forKey:@"defaultValue"];
-            [paramData setObject:[NSNumber numberWithFloat:param.value] forKey:@"currentValue"];
-            [paramData setObject:StringFromAudioUnitParameterUnit(param.unit) forKey:@"unit"];
-            [paramData setObject:[NSNumber numberWithBool:isWritable] forKey:@"isWritable"];
-            [paramData setObject:[NSNumber numberWithBool:canRamp] forKey:@"canRamp"];
-            [paramData setObject:[NSNumber numberWithUnsignedInteger:param.flags] forKey:@"rawFlags"];
-
-            // Enhanced indexed parameter processing
-            if (param.unit == kAudioUnitParameterUnit_Indexed) {
-                [self extractIndexedParameterInfo:param paramData:paramData audioUnit:audioUnit];
-            }
-
-            [auParameters addObject:paramData]; // Add parameter to the AU's parameter array
+        // Enhanced indexed parameter processing
+        if (param.unit == kAudioUnitParameterUnit_Indexed) {
+            [self extractIndexedParameterInfo:param paramData:paramData audioUnit:audioUnit];
         }
+
+        [auParameters addObject:paramData]; // Add parameter to the AU's parameter array
     }
 }
 
@@ -387,7 +388,7 @@ char *IntrospectAudioUnits(const char *type,
                            const char *subtype,
                            const char *manufacturerID) {
     @autoreleasepool {
-        PROGRESS_LOG("Scanning for all AudioUnit plugins...\n");
+        // Silent operation by default (follows devices package pattern)
 
         OSType componentType = type ? FourCharCodeFromString([NSString stringWithUTF8String:type]) : 0;
                 OSType componentSubType = subtype ? FourCharCodeFromString([NSString stringWithUTF8String:subtype]) : 0;
@@ -457,8 +458,8 @@ char *IntrospectAudioUnits(const char *type,
                             VERBOSE_LOG("  ✓ Render resources allocated\n");
                         }
 
-                        // Enhanced initialization for Neural DSP
-                        [inspector initializeNeuralDSPAudioUnit:audioUnit completion:^{
+                        // Enhanced initialization for heavy plugins
+                        [inspector initializePluginAudioUnit:audioUnit completion:^{
                             // Check if this plugin has parameters before processing
                             AUParameterTree *parameterTree = audioUnit.parameterTree;
                             NSArray *allParameters = parameterTree ? parameterTree.allParameters : nil;
@@ -467,7 +468,10 @@ char *IntrospectAudioUnits(const char *type,
                                 // Skip plugins with no parameters - they're not useful for live performance control
                                 VERBOSE_LOG("  ⏭️  Completed inspection of %s (skipped - no parameters)\n", [auName UTF8String]);
                                 
-                                // Don't add to results - we only want plugins with parameters
+                                // Add to results with empty parameters array (maintains count consistency)
+                                @synchronized(allAudioUnitsData) {
+                                    [allAudioUnitsData addObject:auData];
+                                }
                                 if (nameCFString != NULL) {
                                     CFRelease(nameCFString);
                                 }
@@ -509,53 +513,46 @@ char *IntrospectAudioUnits(const char *type,
             }
         } while (currentComponent != NULL);
 
-        PROGRESS_LOG("Waiting for all AudioUnit inspections to complete...\n");
+        // Wait with timeout to prevent hanging during development
         
         // Wait with a 30-second timeout to prevent hanging during development
-        dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(30.0 * NSEC_PER_SEC));
+        dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(g_total_timeout * NSEC_PER_SEC));
         long result = dispatch_group_wait(group, timeout);
         
         if (result != 0) {
-            // Timeout occurred
-            PROGRESS_LOG("⚠️  Timeout: AudioUnit inspection took longer than 30 seconds. This may indicate:\n");
-            PROGRESS_LOG("   - A plugin is hanging or taking too long to initialize\n");
-            PROGRESS_LOG("   - System is under heavy load\n");
-            PROGRESS_LOG("   - A plugin has crashed and is waiting indefinitely\n");
-            PROGRESS_LOG("Returning partial results from %lu completed inspections...\n", 
-                        (unsigned long)allAudioUnitsData.count);
+            // Timeout occurred - return partial results silently
         }
 
         NSUInteger usablePlugins = allAudioUnitsData.count;
-        if (result == 0) {
-            PROGRESS_LOG("Inspection complete. Found %lu usable plugins (with parameters) out of %d total AudioUnits.\n", 
-                        (unsigned long)usablePlugins, count);
-        } else {
-            PROGRESS_LOG("Inspection timed out. Found %lu usable plugins (with parameters) from partial scan of %d total AudioUnits.\n", 
-                        (unsigned long)usablePlugins, count);
-        }
 
-        // Convert the collected data to JSON and output to stdout
+        // Convert the collected data to JSON and wrap in success result
+        NSDictionary *successResult = @{
+            @"success": [NSNumber numberWithBool:YES],
+            @"plugins": allAudioUnitsData,
+            @"pluginCount": @(usablePlugins),
+            @"totalPluginsScanned": @(count),
+            @"timedOut": [NSNumber numberWithBool:(result != 0)]
+        };
+        
         NSError *jsonError = nil;
-        NSData *jsonData = [NSJSONSerialization dataWithJSONObject:allAudioUnitsData
+        NSData *jsonData = [NSJSONSerialization dataWithJSONObject:successResult
                                                            options:NSJSONWritingPrettyPrinted
                                                              error:&jsonError];
 
         if (jsonData && !jsonError) {
             NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
-
-            // Copy the UTF8 string to a malloc'd buffer to avoid returning an inner pointer
-            const char *utf8Str = [jsonString UTF8String];
-            char *result = malloc(strlen(utf8Str) + 1);
-            if (result) {
-                strcpy(result, utf8Str);
-            }
-            // Log success to stderr
-            PROGRESS_LOG("JSON output complete (%.1f KB)\n", (double)jsonData.length / 1024.0);
-
-            return result;
+            return strdup([jsonString UTF8String]);
         } else {
-            PROGRESS_LOG("Error generating JSON: %s\n", [jsonError.localizedDescription UTF8String]);
-            return NULL;
+            // Return error result on JSON serialization failure
+            NSDictionary *errorResult = @{
+                @"success": [NSNumber numberWithBool:NO],
+                @"error": @"JSON serialization failed",
+                @"errorCode": @(-2),
+                @"plugins": @[]
+            };
+            jsonData = [NSJSONSerialization dataWithJSONObject:errorResult options:0 error:nil];
+            NSString *result = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+            return strdup([result UTF8String]);
         }
     }
 }
@@ -644,7 +641,7 @@ char *QuickScanAudioUnits(void) {
         
         // Return success result with plugin list (like devices pattern)
         NSDictionary *successResult = @{
-            @"success": @YES,
+            @"success": [NSNumber numberWithBool:YES],
             @"plugins": pluginList,
             @"pluginCount": @([pluginList count]),
             @"totalPluginsScanned": @(count)
@@ -655,7 +652,7 @@ char *QuickScanAudioUnits(void) {
         
         if (!jsonData || jsonError) {
             NSDictionary *errorResult = @{
-                @"success": @NO,
+                @"success": [NSNumber numberWithBool:NO],
                 @"error": @"JSON serialization failed",
                 @"errorCode": @(-2),
                 @"plugins": @[]

@@ -27,6 +27,7 @@ go.work.sum
 .idea/
 *.swp
 *.swo
+goauv3.code-workspace
 
 # Build artifacts
 *.o

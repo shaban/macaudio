@@ -29,12 +29,6 @@ var enableJSONLogging = false
 // SetJSONLogging enables or disables JSON logging for debugging
 func SetJSONLogging(enabled bool) {
 	enableJSONLogging = enabled
-	// Use the setter function instead of direct variable access
-	if enabled {
-		C.SetVerboseLogging(1)
-	} else {
-		C.SetVerboseLogging(0)
-	}
 }
 
 // PluginInfo represents basic AudioUnit plugin information (quick scan)
@@ -54,6 +48,17 @@ type QuickScanResponse struct {
 	TotalPluginsScanned int          `json:"totalPluginsScanned"`
 	Error               string       `json:"error,omitempty"`
 	ErrorCode           int          `json:"errorCode,omitempty"`
+}
+
+// PluginResult represents the response from introspection (like devices pattern)
+type PluginResult struct {
+	Success             bool     `json:"success"`
+	Plugins             []Plugin `json:"plugins"`
+	PluginCount         int      `json:"pluginCount"`
+	TotalPluginsScanned int      `json:"totalPluginsScanned"`
+	TimedOut            bool     `json:"timedOut,omitempty"`
+	Error               string   `json:"error,omitempty"`
+	ErrorCode           int      `json:"errorCode,omitempty"`
 }
 
 // PluginInfos represents a collection of PluginInfo objects with filtering methods
@@ -382,29 +387,20 @@ func IntrospectFromInfo(plugin PluginInfo) (Plugin, error) {
 }
 */
 
-// IntrospectWithTimeout uses the new timeout-based function for testing
-// Returns an array of plugins matching the filter criteria
-func IntrospectWithTimeout(pluginType, subtype, manufacturerID string) ([]Plugin, error) {
-	var cType, cSubtype, cManufacturerID *C.char
+// introspect is the internal function (non-exported)
+func introspect(pluginType, subtype, manufacturerID string) ([]Plugin, error) {
+	cType := C.CString(pluginType)
+	defer C.free(unsafe.Pointer(cType))
 
-	if pluginType != "" {
-		cType = C.CString(pluginType)
-		defer C.free(unsafe.Pointer(cType))
-	}
+	cSubtype := C.CString(subtype)
+	defer C.free(unsafe.Pointer(cSubtype))
 
-	if subtype != "" {
-		cSubtype = C.CString(subtype)
-		defer C.free(unsafe.Pointer(cSubtype))
-	}
-
-	if manufacturerID != "" {
-		cManufacturerID = C.CString(manufacturerID)
-		defer C.free(unsafe.Pointer(cManufacturerID))
-	}
+	cManufacturerID := C.CString(manufacturerID)
+	defer C.free(unsafe.Pointer(cManufacturerID))
 
 	cResult := C.IntrospectAudioUnits(cType, cSubtype, cManufacturerID)
 	if cResult == nil {
-		return nil, fmt.Errorf("failed to introspect plugins with timeout")
+		return nil, fmt.Errorf("failed to introspect plugins")
 	}
 	defer C.free(unsafe.Pointer(cResult))
 
@@ -415,11 +411,56 @@ func IntrospectWithTimeout(pluginType, subtype, manufacturerID string) ([]Plugin
 		fmt.Printf("🔍 IntrospectWithTimeout JSON: %s\n", jsonData)
 	}
 
-	// Parse JSON into array of Plugin structs
-	var plugins []Plugin
-	if err := json.Unmarshal([]byte(jsonData), &plugins); err != nil {
-		return nil, fmt.Errorf("failed to parse plugins array: %v", err)
+	// Parse JSON into PluginResult struct (like devices pattern)
+	var result PluginResult
+	if err := json.Unmarshal([]byte(jsonData), &result); err != nil {
+		return nil, fmt.Errorf("failed to parse plugin result data: %v", err)
 	}
 
-	return plugins, nil
+	// Check for success status (like devices pattern)
+	if !result.Success {
+		errorMsg := result.Error
+		if errorMsg == "" {
+			errorMsg = "unknown error"
+		}
+		return nil, fmt.Errorf("plugin introspection failed: %s (code: %d)", errorMsg, result.ErrorCode)
+	}
+
+	return result.Plugins, nil
+}
+
+// Introspect method on PluginInfo - returns single Plugin
+func (pi PluginInfo) Introspect() (Plugin, error) {
+	results, err := introspect(pi.Type, pi.Subtype, pi.ManufacturerID)
+	if err != nil {
+		return Plugin{}, err
+	}
+
+	if len(results) != 1 {
+		return Plugin{}, fmt.Errorf("expected 1 plugin, got %d for %s:%s:%s",
+			len(results), pi.Type, pi.Subtype, pi.ManufacturerID)
+	}
+
+	return results[0], nil
+}
+
+// Introspect method on PluginInfos - returns slice of Plugins
+func (infos PluginInfos) Introspect() ([]Plugin, error) {
+	var allPlugins []Plugin
+
+	for _, info := range infos {
+		plugin, err := info.Introspect()
+		if err != nil {
+			return nil, fmt.Errorf("failed to introspect plugin %s: %v", info.Name, err)
+		}
+		allPlugins = append(allPlugins, plugin)
+	}
+
+	return allPlugins, nil
+}
+
+// Introspect uses the new timeout-based function
+// Returns an array of plugins matching the filter criteria
+func Introspect(pluginType, subtype, manufacturerID string) ([]Plugin, error) {
+	return introspect(pluginType, subtype, manufacturerID)
 }

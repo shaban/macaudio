@@ -121,8 +121,9 @@ func TestQuickScanPerformance(t *testing.T) {
 	t.Log("✅ Performance test completed successfully!")
 }
 
-func TestNeuralDSPSpecific(t *testing.T) {
-	t.Log("Testing Neural DSP plugin with IntrospectAudioUnitsWithTimeout...")
+func TestAllPlugins(t *testing.T) {
+	// Test to ensure quick scan and full introspection deliver the same count
+	t.Log("Testing all plugins: comparing quick scan vs full introspection...")
 
 	// Enable JSON logging to capture the raw JSON output
 	originalState := enableJSONLogging
@@ -131,60 +132,61 @@ func TestNeuralDSPSpecific(t *testing.T) {
 	}()
 	SetJSONLogging(true)
 
-	// Test IntrospectWithTimeout with Neural DSP specific parameters
-	// This should return an array of length 1 with the Neural DSP plugin
-	//plugins, err := IntrospectWithTimeout("aumf", "NMAS", "NDSP")
-	plugins, err := IntrospectWithTimeout("", "", "")
+	// First, do a quick scan to get the baseline count
+	t.Log("Step 1: Quick scan to get plugin count...")
+	pluginInfos, err := List()
 	if err != nil {
-		t.Fatalf("IntrospectWithTimeout failed: %v", err)
+		t.Fatalf("Quick scan failed: %v", err)
+	}
+	quickScanCount := len(pluginInfos)
+	t.Logf("Quick scan found %d plugins", quickScanCount)
+
+	if quickScanCount == 0 {
+		t.Skip("No plugins found")
+		return
 	}
 
-	// Verify we got exactly one plugin back
-	if len(plugins) != 1 {
-		t.Fatalf("Expected 1 plugin, got %d", len(plugins))
+	// Then, do full introspection of all plugins
+	t.Log("Step 2: Full introspection of all plugins...")
+	plugins, err := Introspect("", "", "") // All plugins
+	if err != nil {
+		t.Fatalf("Full introspection failed: %v", err)
+	}
+	introspectionCount := len(plugins)
+	t.Logf("Full introspection found %d plugins", introspectionCount)
+
+	// Compare counts - they should match
+	if quickScanCount != introspectionCount {
+		t.Errorf("Plugin count mismatch: Quick scan found %d, Full introspection found %d",
+			quickScanCount, introspectionCount)
+	} else {
+		t.Logf("✅ Success! Both methods found the same number of plugins: %d", quickScanCount)
 	}
 
-	plugin := plugins[0]
-	t.Logf("✅ Success! Neural DSP plugin introspected with timeout function")
-	t.Logf("Plugin name: %s", plugin.Name)
-	t.Logf("Category: %s", plugin.Category)
-	t.Logf("Parameters: %d", len(plugin.Parameters))
-
-	// Check we got reasonable parameter data
-	if len(plugin.Parameters) > 0 {
-		first := plugin.Parameters[0]
-		t.Logf("First parameter: %s (Address: %d, Min: %.2f, Max: %.2f)",
-			first.DisplayName, first.Address, first.MinValue, first.MaxValue)
-	}
-
-	// Look for indexed parameters specifically
-	indexedCount := 0
-	indexedWithValues := 0
-	for _, param := range plugin.Parameters {
-		if param.Unit == "Indexed" {
-			indexedCount++
-			if param.IndexedValues != nil && len(param.IndexedValues) > 0 {
-				indexedWithValues++
-				t.Logf("Indexed parameter '%s' has %d values: %v",
-					param.DisplayName, len(param.IndexedValues), param.IndexedValues[:min(3, len(param.IndexedValues))])
-			}
+	// Validate that introspected plugins have parameter data
+	pluginsWithParams := 0
+	totalParams := 0
+	for _, plugin := range plugins {
+		if len(plugin.Parameters) > 0 {
+			pluginsWithParams++
+			totalParams += len(plugin.Parameters)
 		}
 	}
 
-	t.Logf("Found %d indexed parameters, %d with extracted values", indexedCount, indexedWithValues)
+	t.Logf("Plugins with parameters: %d/%d", pluginsWithParams, introspectionCount)
+	t.Logf("Total parameters across all plugins: %d", totalParams)
 
-	// Validate we actually got the plugin data
-	if plugin.Name == "" {
-		t.Error("Plugin name is empty")
-	}
-	if len(plugin.Parameters) == 0 {
-		t.Error("No parameters found - this is unusual for Neural DSP plugins")
+	// Log some sample plugins for verification
+	sampleCount := min(3, len(plugins))
+	t.Logf("Sample of introspected plugins:")
+	for i := 0; i < sampleCount; i++ {
+		plugin := plugins[i]
+		t.Logf("  %d. %s - %d parameters", i+1, plugin.Name, len(plugin.Parameters))
 	}
 
-	t.Logf("Test completed successfully!")
+	t.Log("✅ All plugins test completed successfully!")
 }
 
-// TestHelperFunction tests the new helper function that accepts PluginInfo
 /*func TestIntrospectFromInfo(t *testing.T) {
 	t.Log("Testing IntrospectFromInfo helper function...")
 
