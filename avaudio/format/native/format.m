@@ -92,34 +92,34 @@ AudioFormatResult audioformat_new_with_channels(double sampleRate, int channels,
     return (AudioFormatResult){wrapper, NULL};  // NULL = success
 }
 
-// Copy an existing format
-AudioFormatResult audioformat_copy(AudioFormat* wrapper) {
+// Create format from AudioSpec struct
+AudioFormatResult audioformat_new_from_spec(double sampleRate, int channels, bool interleaved) {
+    if (sampleRate <= 0) {
+        return (AudioFormatResult){NULL, "Sample rate must be positive"};
+    }
+    
+    if (channels <= 0) {
+        return (AudioFormatResult){NULL, "Channel count must be positive"};
+    }
+    
+    AVAudioFormat* format = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatFloat32
+                                                             sampleRate:sampleRate
+                                                               channels:channels
+                                                            interleaved:interleaved];
+    
+    if (!format) {
+        return (AudioFormatResult){NULL, "Failed to create audio format from spec"};
+    }
+    
+    AudioFormat* wrapper = malloc(sizeof(AudioFormat));
     if (!wrapper) {
-        return (AudioFormatResult){NULL, "Format pointer is null"};
-    }
-    
-    if (!wrapper->format) {
-        return (AudioFormatResult){NULL, "Format object is null"};
-    }
-    
-    AVAudioFormat* originalFormat = (__bridge AVAudioFormat*)wrapper->format;
-    
-    AVAudioFormat* newFormat = [[AVAudioFormat alloc] initWithCommonFormat:originalFormat.commonFormat
-                                                               sampleRate:originalFormat.sampleRate
-                                                                 channels:originalFormat.channelCount
-                                                              interleaved:originalFormat.isInterleaved];
-    
-    if (!newFormat) {
-        return (AudioFormatResult){NULL, "Failed to create copy of audio format"};
-    }
-    
-    AudioFormat* newWrapper = malloc(sizeof(AudioFormat));
-    if (!newWrapper) {
         return (AudioFormatResult){NULL, "Memory allocation failed"};
     }
     
-    newWrapper->format = (__bridge_retained void*)newFormat;
-    return (AudioFormatResult){newWrapper, NULL};  // NULL = success
+    wrapper->format = (__bridge_retained void*)format;
+    NSLog(@"Created format from spec: %.0f Hz, %d channels, %s", 
+          sampleRate, channels, interleaved ? "interleaved" : "non-interleaved");
+    return (AudioFormatResult){wrapper, NULL};
 }
 
 // Get the underlying AVAudioFormat pointer for engine operations

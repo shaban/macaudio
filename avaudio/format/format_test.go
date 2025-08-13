@@ -126,45 +126,110 @@ func TestPCMFloat32ViaNewWithChannels(t *testing.T) {
 		format.SampleRate(), format.ChannelCount(), format.IsInterleaved())
 }
 
-func TestFormatCopy(t *testing.T) {
+func TestFormatCopyLegacy(t *testing.T) {
+	t.Skip("Legacy Copy() method - replaced by NewFromSpec approach")
+}
+
+func TestNewFromSpec(t *testing.T) {
+	// Create an original format
 	original, err := NewStereo(48000)
 	if err != nil {
 		t.Fatalf("Failed to create original format: %v", err)
 	}
 	defer original.Destroy()
 
-	copied, err := original.Copy()
+	// Extract its specification
+	spec := original.ToSpec()
+	t.Logf("Extracted spec: %.0f Hz, %d channels, interleaved: %t",
+		spec.SampleRate, spec.ChannelCount, spec.Interleaved)
+
+	// Create a new format from the specification
+	newFormat, err := NewFromSpec(spec)
 	if err != nil {
-		t.Fatalf("Failed to copy format: %v", err)
+		t.Fatalf("Failed to create format from spec: %v", err)
 	}
-	defer copied.Destroy()
+	defer newFormat.Destroy()
 
 	// Should have same properties
-	if copied.SampleRate() != original.SampleRate() {
-		t.Errorf("Copy sample rate mismatch: expected %.0f, got %.0f",
-			original.SampleRate(), copied.SampleRate())
+	if newFormat.SampleRate() != original.SampleRate() {
+		t.Errorf("NewFromSpec sample rate mismatch: expected %.0f, got %.0f",
+			original.SampleRate(), newFormat.SampleRate())
 	}
 
-	if copied.ChannelCount() != original.ChannelCount() {
-		t.Errorf("Copy channel count mismatch: expected %d, got %d",
-			original.ChannelCount(), copied.ChannelCount())
+	if newFormat.ChannelCount() != original.ChannelCount() {
+		t.Errorf("NewFromSpec channel count mismatch: expected %d, got %d",
+			original.ChannelCount(), newFormat.ChannelCount())
 	}
 
-	if copied.IsInterleaved() != original.IsInterleaved() {
-		t.Errorf("Copy interleaved mismatch: expected %t, got %t",
-			original.IsInterleaved(), copied.IsInterleaved())
+	if newFormat.IsInterleaved() != original.IsInterleaved() {
+		t.Errorf("NewFromSpec interleaved mismatch: expected %t, got %t",
+			original.IsInterleaved(), newFormat.IsInterleaved())
 	}
 
 	// Should be different objects but equal content
-	if copied.GetFormatPtr() == original.GetFormatPtr() {
-		t.Error("Copy should have different format pointer than original")
+	if newFormat.GetFormatPtr() == original.GetFormatPtr() {
+		t.Error("NewFromSpec should have different format pointer than original")
 	}
 
-	if !copied.IsEqual(original) {
-		t.Error("Copy should be equal to original")
+	if !newFormat.IsEqual(original) {
+		t.Error("NewFromSpec result should be equal to original")
 	}
 
-	t.Logf("✓ Format copy successful: original and copy are equal but different objects")
+	t.Logf("✓ NewFromSpec successful: new format equals original but different objects")
+}
+
+func TestAudioSpec(t *testing.T) {
+	// Test creating formats directly from AudioSpec
+	testCases := []struct {
+		name string
+		spec AudioSpec
+	}{
+		{
+			name: "Mono 44.1kHz",
+			spec: AudioSpec{SampleRate: 44100, ChannelCount: 1, Interleaved: false},
+		},
+		{
+			name: "Stereo 48kHz Interleaved",
+			spec: AudioSpec{SampleRate: 48000, ChannelCount: 2, Interleaved: true},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			format, err := NewFromSpec(tc.spec)
+			if err != nil {
+				t.Fatalf("Failed to create format from spec: %v", err)
+			}
+			defer format.Destroy()
+
+			// Verify properties match the spec
+			if format.SampleRate() != tc.spec.SampleRate {
+				t.Errorf("Sample rate mismatch: expected %.0f, got %.0f",
+					tc.spec.SampleRate, format.SampleRate())
+			}
+
+			if format.ChannelCount() != tc.spec.ChannelCount {
+				t.Errorf("Channel count mismatch: expected %d, got %d",
+					tc.spec.ChannelCount, format.ChannelCount())
+			}
+
+			if format.IsInterleaved() != tc.spec.Interleaved {
+				t.Errorf("Interleaved mismatch: expected %t, got %t",
+					tc.spec.Interleaved, format.IsInterleaved())
+			}
+
+			// Verify ToSpec() returns the same specification
+			resultSpec := format.ToSpec()
+			if resultSpec.SampleRate != tc.spec.SampleRate ||
+				resultSpec.ChannelCount != tc.spec.ChannelCount ||
+				resultSpec.Interleaved != tc.spec.Interleaved {
+				t.Errorf("ToSpec() mismatch: expected %+v, got %+v", tc.spec, resultSpec)
+			}
+
+			t.Logf("✓ %s: %.0f Hz, %d channels, interleaved: %t",
+				tc.name, format.SampleRate(), format.ChannelCount(), format.IsInterleaved())
+		})
+	}
 }
 
 func TestFormatEquality(t *testing.T) {
@@ -287,15 +352,16 @@ func TestFormatIntegrationWorkflow(t *testing.T) {
 		t.Error("Stereo format properties not suitable for engine integration")
 	}
 
-	// Test format copying for multiple engine nodes
-	monoCopy, err := monoFormat.Copy()
+	// Test format creation from specs for multiple engine nodes
+	monoSpec := monoFormat.ToSpec()
+	monoCopy, err := NewFromSpec(monoSpec)
 	if err != nil {
-		t.Fatalf("Failed to copy mono format: %v", err)
+		t.Fatalf("Failed to create format from mono spec: %v", err)
 	}
 	defer monoCopy.Destroy()
 
 	if !monoFormat.IsEqual(monoCopy) {
-		t.Error("Format copy should be equal to original")
+		t.Error("Format created from spec should be equal to original")
 	}
 
 	t.Logf("✓ Integration workflow: formats ready for engine usage")

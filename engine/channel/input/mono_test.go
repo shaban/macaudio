@@ -238,7 +238,10 @@ func TestMonoToStereoRealAudioPanning(t *testing.T) {
 	t.Log("✓ Created tone generator (440 Hz default)")
 
 	// Get the node pointer for engine operations
-	toneNodePtr := toneNode.GetNodePtr()
+	toneNodePtr, err := toneNode.GetNodePtr()
+	if err != nil {
+		t.Fatalf("Failed to get tone node pointer: %v", err)
+	}
 	if toneNodePtr == nil {
 		t.Fatal("Tone node pointer is nil")
 	}
@@ -263,9 +266,12 @@ func TestMonoToStereoRealAudioPanning(t *testing.T) {
 	}
 
 	// Connect the channel output to the main mixer so engine can start
-	mainMixerPtr := eng.MainMixerNode()
+	mainMixerPtr, err := eng.MainMixerNode()
+	if err != nil {
+		t.Fatalf("Failed to get main mixer pointer: %v", err)
+	}
 	if mainMixerPtr == nil {
-		t.Fatal("Failed to get main mixer pointer")
+		t.Fatal("Main mixer pointer is nil")
 	}
 
 	err = eng.Connect(monoChannel.GetOutputNode(), mainMixerPtr, 0, 0)
@@ -348,21 +354,22 @@ func TestMonoToStereoRealAudioPanning(t *testing.T) {
 				leftRMS := stereoAnalysis.LeftChannelRMS
 				rightRMS := stereoAnalysis.RightChannelRMS
 
-				if testCase.panPosition == -1.0 {
+				switch testCase.panPosition {
+				case -1.0:
 					// Full left - left should be much stronger
 					if leftRMS > rightRMS*1.5 { // Left at least 50% stronger
 						t.Logf("✓ Full left pan: Left channel dominant (L:%.6f > R:%.6f)", leftRMS, rightRMS)
 					} else {
 						t.Errorf("Expected left dominance for full left pan, got L:%.6f R:%.6f", leftRMS, rightRMS)
 					}
-				} else if testCase.panPosition == 1.0 {
+				case 1.0:
 					// Full right - right should be much stronger
 					if rightRMS > leftRMS*1.5 { // Right at least 50% stronger
 						t.Logf("✓ Full right pan: Right channel dominant (R:%.6f > L:%.6f)", rightRMS, leftRMS)
 					} else {
 						t.Errorf("Expected right dominance for full right pan, got L:%.6f R:%.6f", leftRMS, rightRMS)
 					}
-				} else if testCase.panPosition == 0.0 {
+				case 0.0:
 					// Center - should be roughly equal
 					ratio := leftRMS / rightRMS
 					if ratio > 0.7 && ratio < 1.3 { // Within 30% of each other

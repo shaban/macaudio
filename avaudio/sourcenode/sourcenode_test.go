@@ -28,7 +28,10 @@ func TestSourceNode_GetNodePtr(t *testing.T) {
 	defer sourceNode.Destroy()
 
 	// Should return valid pointer for valid source node
-	nodePtr := sourceNode.GetNodePtr()
+	nodePtr, err := sourceNode.GetNodePtr()
+	if err != nil {
+		t.Fatalf("Failed to get node pointer: %v", err)
+	}
 	if nodePtr == nil {
 		t.Error("GetNodePtr should not return nil for valid source node")
 	}
@@ -37,14 +40,16 @@ func TestSourceNode_GetNodePtr(t *testing.T) {
 func TestSourceNode_GetNodePtr_Nil(t *testing.T) {
 	// Test nil source node
 	var sourceNode *SourceNode
-	if sourceNode.GetNodePtr() != nil {
-		t.Error("GetNodePtr should return nil for nil source node")
+	_, err := sourceNode.GetNodePtr()
+	if err == nil {
+		t.Error("GetNodePtr should return error for nil source node")
 	}
 
 	// Test source node with nil ptr
 	sourceNode = &SourceNode{ptr: nil}
-	if sourceNode.GetNodePtr() != nil {
-		t.Error("GetNodePtr should return nil for source node with nil ptr")
+	_, err = sourceNode.GetNodePtr()
+	if err == nil {
+		t.Error("GetNodePtr should return error for source node with nil ptr")
 	}
 }
 
@@ -55,19 +60,26 @@ func TestSourceNode_Destroy(t *testing.T) {
 	}
 
 	// Destroy should work on valid source node
-	sourceNode.Destroy()
-	
+	err = sourceNode.Destroy()
+	if err != nil {
+		t.Fatalf("Failed to destroy source node: %v", err)
+	}
+
 	// After destroy, ptr should be nil (tests our resource cleanup)
 	if sourceNode.ptr != nil {
 		t.Error("Expected source node ptr to be nil after Destroy()")
 	}
 
-	// Multiple destroys should be safe
-	sourceNode.Destroy()
-	
-	// Should still be safe
-	if sourceNode.GetNodePtr() != nil {
-		t.Error("Destroyed source node should return nil for GetNodePtr()")
+	// Multiple destroys should return error
+	err = sourceNode.Destroy()
+	if err == nil {
+		t.Error("Expected error when destroying already destroyed source node")
+	}
+
+	// Should return error
+	_, err = sourceNode.GetNodePtr()
+	if err == nil {
+		t.Error("Destroyed source node should return error for GetNodePtr()")
 	}
 }
 
@@ -86,7 +98,7 @@ func TestSourceNode_Bridge_Solidity(t *testing.T) {
 	// Create multiple source nodes to test bridge stability
 	const numNodes = 10
 	sourceNodes := make([]*SourceNode, numNodes)
-	
+
 	// Create all nodes
 	for i := 0; i < numNodes; i++ {
 		var err error
@@ -94,22 +106,29 @@ func TestSourceNode_Bridge_Solidity(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to create source node %d: %v", i, err)
 		}
-		
+
 		// Each should have a valid pointer
-		if sourceNodes[i].GetNodePtr() == nil {
+		nodePtr, err := sourceNodes[i].GetNodePtr()
+		if err != nil {
+			t.Errorf("Source node %d failed to get pointer: %v", i, err)
+		} else if nodePtr == nil {
 			t.Errorf("Source node %d has nil pointer", i)
 		}
 	}
-	
+
 	// Destroy all nodes
 	for i, node := range sourceNodes {
-		node.Destroy()
-		
-		// After destroy, should be nil
-		if node.GetNodePtr() != nil {
-			t.Errorf("Source node %d not properly destroyed", i)
+		err := node.Destroy()
+		if err != nil {
+			t.Errorf("Failed to destroy source node %d: %v", i, err)
+		}
+
+		// After destroy, should return error
+		_, err = node.GetNodePtr()
+		if err == nil {
+			t.Errorf("Source node %d should return error after destroy", i)
 		}
 	}
-	
+
 	t.Logf("Successfully created and destroyed %d source nodes", numNodes)
 }

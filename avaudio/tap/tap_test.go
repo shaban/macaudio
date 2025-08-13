@@ -2,7 +2,6 @@ package tap
 
 import (
 	"testing"
-	"unsafe"
 
 	"github.com/shaban/macaudio/avaudio/engine"
 	"github.com/shaban/macaudio/avaudio/node"
@@ -19,9 +18,9 @@ func TestTapBasicFunctionality(t *testing.T) {
 	defer eng.Destroy()
 
 	// Create a mixer node to tap
-	mixerPtr := node.CreateMixer()
-	if mixerPtr == nil {
-		t.Fatal("Failed to create mixer node")
+	mixerPtr, mixerErr := node.CreateMixer()
+	if mixerErr != nil || mixerPtr == nil {
+		t.Fatalf("Failed to create mixer node: %v", mixerErr)
 	}
 	defer node.ReleaseMixer(mixerPtr)
 
@@ -67,22 +66,36 @@ func TestTapBasicFunctionality(t *testing.T) {
 func TestTapInstallErrors(t *testing.T) {
 	t.Log("Testing tap error handling...")
 
+	// Create a valid engine for testing pointer combinations
+	eng, err := engine.New(engine.DefaultAudioSpec())
+	if err != nil || eng == nil {
+		t.Skip("Cannot create AVAudioEngine for testing")
+	}
+	defer eng.Destroy()
+
+	// Create a valid mixer node for testing
+	mixerPtr, mixerErr := node.CreateMixer()
+	if mixerErr != nil || mixerPtr == nil {
+		t.Skip("Cannot create mixer node for testing")
+	}
+	defer node.ReleaseMixer(mixerPtr)
+
 	// Test with nil engine pointer
-	_, err := InstallTap(nil, unsafe.Pointer(uintptr(0x123)), 0)
+	_, err = InstallTap(nil, mixerPtr, 0)
 	if err == nil {
 		t.Error("Expected error with nil engine pointer")
 	}
 	t.Log("✓ Correctly rejected nil engine pointer")
 
 	// Test with nil node pointer
-	_, err = InstallTap(unsafe.Pointer(uintptr(0x123)), nil, 0)
+	_, err = InstallTap(eng.Ptr(), nil, 0)
 	if err == nil {
 		t.Error("Expected error with nil node pointer")
 	}
 	t.Log("✓ Correctly rejected nil node pointer")
 
 	// Test with negative bus index
-	_, err = InstallTap(unsafe.Pointer(uintptr(0x123)), unsafe.Pointer(uintptr(0x456)), -1)
+	_, err = InstallTap(eng.Ptr(), mixerPtr, -1)
 	if err == nil {
 		t.Error("Expected error with negative bus index")
 	}
@@ -93,13 +106,19 @@ func TestTapCount(t *testing.T) {
 	t.Log("Testing tap count functions...")
 
 	// Get initial count
-	initialCount := GetActiveTapCount()
+	initialCount, err := GetActiveTapCount()
+	if err != nil {
+		t.Fatalf("Failed to get active tap count: %v", err)
+	}
 	t.Logf("Initial active tap count: %d", initialCount)
 
 	// Remove all taps to start clean
 	RemoveAllTaps()
 
 	// Verify count is reset
-	count := GetActiveTapCount()
+	count, err := GetActiveTapCount()
+	if err != nil {
+		t.Fatalf("Failed to get active tap count after RemoveAllTaps: %v", err)
+	}
 	t.Logf("✓ Tap count after RemoveAllTaps(): %d", count)
 }

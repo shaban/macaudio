@@ -52,13 +52,13 @@ type QuickScanResponse struct {
 
 // PluginResult represents the response from introspection (like devices pattern)
 type PluginResult struct {
-	Success             bool     `json:"success"`
-	Plugins             []Plugin `json:"plugins"`
-	PluginCount         int      `json:"pluginCount"`
-	TotalPluginsScanned int      `json:"totalPluginsScanned"`
-	TimedOut            bool     `json:"timedOut,omitempty"`
-	Error               string   `json:"error,omitempty"`
-	ErrorCode           int      `json:"errorCode,omitempty"`
+	Success             bool      `json:"success"`
+	Plugins             []*Plugin `json:"plugins"`
+	PluginCount         int       `json:"pluginCount"`
+	TotalPluginsScanned int       `json:"totalPluginsScanned"`
+	TimedOut            bool      `json:"timedOut,omitempty"`
+	Error               string    `json:"error,omitempty"`
+	ErrorCode           int       `json:"errorCode,omitempty"`
 }
 
 // PluginInfos represents a collection of PluginInfo objects with filtering methods
@@ -388,7 +388,7 @@ func IntrospectFromInfo(plugin PluginInfo) (Plugin, error) {
 */
 
 // introspect is the internal function (non-exported)
-func introspect(pluginType, subtype, manufacturerID string) ([]Plugin, error) {
+func introspect(pluginType, subtype, manufacturerID string) ([]*Plugin, error) {
 	cType := C.CString(pluginType)
 	defer C.free(unsafe.Pointer(cType))
 
@@ -430,14 +430,14 @@ func introspect(pluginType, subtype, manufacturerID string) ([]Plugin, error) {
 }
 
 // Introspect method on PluginInfo - returns single Plugin
-func (pi PluginInfo) Introspect() (Plugin, error) {
+func (pi PluginInfo) Introspect() (*Plugin, error) {
 	results, err := introspect(pi.Type, pi.Subtype, pi.ManufacturerID)
 	if err != nil {
-		return Plugin{}, err
+		return &Plugin{}, err
 	}
 
 	if len(results) != 1 {
-		return Plugin{}, fmt.Errorf("expected 1 plugin, got %d for %s:%s:%s",
+		return &Plugin{}, fmt.Errorf("expected 1 plugin, got %d for %s:%s:%s",
 			len(results), pi.Type, pi.Subtype, pi.ManufacturerID)
 	}
 
@@ -445,8 +445,8 @@ func (pi PluginInfo) Introspect() (Plugin, error) {
 }
 
 // Introspect method on PluginInfos - returns slice of Plugins
-func (infos PluginInfos) Introspect() ([]Plugin, error) {
-	var allPlugins []Plugin
+func (infos PluginInfos) Introspect() ([]*Plugin, error) {
+	var allPlugins []*Plugin
 
 	for _, info := range infos {
 		plugin, err := info.Introspect()
@@ -461,6 +461,6 @@ func (infos PluginInfos) Introspect() ([]Plugin, error) {
 
 // Introspect uses the new timeout-based function
 // Returns an array of plugins matching the filter criteria
-func Introspect(pluginType, subtype, manufacturerID string) ([]Plugin, error) {
+func Introspect(pluginType, subtype, manufacturerID string) ([]*Plugin, error) {
 	return introspect(pluginType, subtype, manufacturerID)
 }

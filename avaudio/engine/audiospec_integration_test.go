@@ -29,8 +29,14 @@ func TestEngine_AudioSpecIntegration(t *testing.T) {
 		spec.SampleRate, spec.BufferSize, spec.BitDepth, spec.ChannelCount)
 
 	// Create two mixer nodes for testing connection
-	mixer1Ptr := node.CreateMixer()
-	mixer2Ptr := node.CreateMixer()
+	mixer1Ptr, err := node.CreateMixer()
+	if err != nil {
+		t.Fatalf("Failed to create first mixer: %v", err)
+	}
+	mixer2Ptr, err := node.CreateMixer()
+	if err != nil {
+		t.Fatalf("Failed to create second mixer: %v", err)
+	}
 	defer node.ReleaseMixer(mixer1Ptr)
 	defer node.ReleaseMixer(mixer2Ptr)
 
@@ -106,8 +112,14 @@ func TestEngine_AudioSpecFormatCreation(t *testing.T) {
 			defer engine.Destroy()
 
 			// Test that we can create mixer nodes and connect them
-			mixer1Ptr := node.CreateMixer()
-			mixer2Ptr := node.CreateMixer()
+			mixer1Ptr, err := node.CreateMixer()
+			if err != nil {
+				t.Fatalf("Failed to create first mixer: %v", err)
+			}
+			mixer2Ptr, err := node.CreateMixer()
+			if err != nil {
+				t.Fatalf("Failed to create second mixer: %v", err)
+			}
 			defer node.ReleaseMixer(mixer1Ptr)
 			defer node.ReleaseMixer(mixer2Ptr)
 

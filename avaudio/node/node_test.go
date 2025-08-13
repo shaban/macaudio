@@ -16,7 +16,10 @@ func TestNodeHelperFunctions(t *testing.T) {
 	defer sourceNode.Destroy()
 
 	// Get the node pointer (upcast to AVAudioNode*)
-	nodePtr := sourceNode.GetNodePtr()
+	nodePtr, err := sourceNode.GetNodePtr()
+	if err != nil {
+		t.Fatalf("Failed to get node pointer: %v", err)
+	}
 	if nodePtr == nil {
 		t.Fatal("Source node pointer is nil")
 	}
@@ -24,7 +27,10 @@ func TestNodeHelperFunctions(t *testing.T) {
 	t.Logf("✓ Created source node and got node pointer")
 
 	// Test GetNumberOfInputs - AVAudioSourceNode should have 0 inputs
-	numInputs := GetNumberOfInputs(nodePtr)
+	numInputs, err := GetNumberOfInputs(nodePtr)
+	if err != nil {
+		t.Fatalf("Failed to get number of inputs: %v", err)
+	}
 	t.Logf("✓ Number of inputs: %d", numInputs)
 
 	if numInputs != 0 {
@@ -32,7 +38,10 @@ func TestNodeHelperFunctions(t *testing.T) {
 	}
 
 	// Test GetNumberOfOutputs - AVAudioSourceNode should have 1 output
-	numOutputs := GetNumberOfOutputs(nodePtr)
+	numOutputs, err := GetNumberOfOutputs(nodePtr)
+	if err != nil {
+		t.Fatalf("Failed to get number of outputs: %v", err)
+	}
 	t.Logf("✓ Number of outputs: %d", numOutputs)
 
 	if numOutputs != 1 {
@@ -40,7 +49,10 @@ func TestNodeHelperFunctions(t *testing.T) {
 	}
 
 	// Test IsInstalledOnEngine - should be false since not attached
-	installed := IsInstalledOnEngine(nodePtr)
+	installed, err := IsInstalledOnEngine(nodePtr)
+	if err != nil {
+		t.Fatalf("Failed to check if installed on engine: %v", err)
+	}
 	t.Logf("✓ Installed on engine: %t", installed)
 
 	if installed {
@@ -49,7 +61,10 @@ func TestNodeHelperFunctions(t *testing.T) {
 
 	// Test LogInfo - should not crash
 	t.Logf("✓ Logging node info:")
-	LogInfo(nodePtr)
+	err = LogInfo(nodePtr)
+	if err != nil {
+		t.Fatalf("Failed to log node info: %v", err)
+	}
 }
 
 func TestNodeHelperValidation(t *testing.T) {
@@ -59,7 +74,10 @@ func TestNodeHelperValidation(t *testing.T) {
 	}
 	defer sourceNode.Destroy()
 
-	nodePtr := sourceNode.GetNodePtr()
+	nodePtr, err := sourceNode.GetNodePtr()
+	if err != nil {
+		t.Fatalf("Failed to get node pointer: %v", err)
+	}
 
 	// Test bus validation - source nodes have 0 inputs, 1 output
 
@@ -104,40 +122,70 @@ func TestNodeHelperValidation(t *testing.T) {
 }
 
 func TestNodeHelperNilSafety(t *testing.T) {
-	// Test all functions with nil pointer - should not crash
+	// Test all functions with nil pointer - should return errors
 	var nilPtr unsafe.Pointer = nil
 
-	// Should return safe defaults
-	numInputs := GetNumberOfInputs(nilPtr)
+	// Should return errors for nil pointer
+	numInputs, err := GetNumberOfInputs(nilPtr)
+	if err == nil {
+		t.Error("Expected error for nil pointer")
+	} else {
+		t.Logf("✓ GetNumberOfInputs with nil pointer correctly rejected: %v", err)
+	}
 	if numInputs != 0 {
 		t.Errorf("Expected 0 inputs for nil pointer, got %d", numInputs)
 	}
 
-	numOutputs := GetNumberOfOutputs(nilPtr)
+	numOutputs, err := GetNumberOfOutputs(nilPtr)
+	if err == nil {
+		t.Error("Expected error for nil pointer")
+	} else {
+		t.Logf("✓ GetNumberOfOutputs with nil pointer correctly rejected: %v", err)
+	}
 	if numOutputs != 0 {
 		t.Errorf("Expected 0 outputs for nil pointer, got %d", numOutputs)
 	}
 
-	installed := IsInstalledOnEngine(nilPtr)
+	installed, err := IsInstalledOnEngine(nilPtr)
+	if err == nil {
+		t.Error("Expected error for nil pointer")
+	} else {
+		t.Logf("✓ IsInstalledOnEngine with nil pointer correctly rejected: %v", err)
+	}
 	if installed {
 		t.Error("Expected false for nil pointer installation check")
 	}
 
-	// These should not crash
-	LogInfo(nilPtr)
+	// LogInfo should return error for nil pointer
+	err = LogInfo(nilPtr)
+	if err == nil {
+		t.Error("Expected error for nil pointer")
+	} else {
+		t.Logf("✓ LogInfo with nil pointer correctly rejected: %v", err)
+	}
 
-	formatPtr := GetInputFormatForBus(nilPtr, 0)
+	formatPtr, err := GetInputFormatForBus(nilPtr, 0)
+	if err == nil {
+		t.Error("Expected error for nil node pointer")
+	} else {
+		t.Logf("✓ GetInputFormatForBus with nil pointer correctly rejected: %v", err)
+	}
 	if formatPtr != nil {
 		t.Error("Expected nil format for nil node pointer")
 	}
 
-	formatPtr = GetOutputFormatForBus(nilPtr, 0)
+	formatPtr, err = GetOutputFormatForBus(nilPtr, 0)
+	if err == nil {
+		t.Error("Expected error for nil node pointer")
+	} else {
+		t.Logf("✓ GetOutputFormatForBus with nil pointer correctly rejected: %v", err)
+	}
 	if formatPtr != nil {
 		t.Error("Expected nil format for nil node pointer")
 	}
 
 	// Validation should return errors
-	err := ValidateInputBus(nilPtr, 0)
+	err = ValidateInputBus(nilPtr, 0)
 	if err == nil {
 		t.Error("Expected error for nil pointer input bus validation")
 	} else {
@@ -161,39 +209,50 @@ func TestGetFormatForBus(t *testing.T) {
 	}
 	defer sourceNode.Destroy()
 
-	nodePtr := sourceNode.GetNodePtr()
+	nodePtr, err := sourceNode.GetNodePtr()
+	if err != nil {
+		t.Fatalf("Failed to get node pointer: %v", err)
+	}
 
 	// Test getting output format (source nodes have output but no input)
-	formatPtr := GetOutputFormatForBus(nodePtr, 0)
-
-	// Format might be nil until connected to engine - that's normal
-	if formatPtr == nil {
-		t.Logf("✓ Output format is nil (normal for unconnected node)")
+	formatPtr, err := GetOutputFormatForBus(nodePtr, 0)
+	if err != nil {
+		// Format might not be available until connected to engine - check if it's a reasonable error
+		t.Logf("Output format not available (normal for unconnected node): %v", err)
 	} else {
 		t.Logf("✓ Got output format pointer: %p", formatPtr)
 	}
 
-	// Test getting input format - should always be nil for source nodes
-	inputFormatPtr := GetInputFormatForBus(nodePtr, 0)
+	// Test getting input format - should return error for source nodes (no inputs)
+	inputFormatPtr, err := GetInputFormatForBus(nodePtr, 0)
+	if err == nil {
+		t.Error("Expected error for source node input format (has no inputs)")
+	} else {
+		t.Logf("✓ Input format correctly rejected for source node: %v", err)
+	}
 	if inputFormatPtr != nil {
 		t.Error("Expected nil input format for source node (has no inputs)")
-	} else {
-		t.Logf("✓ Input format correctly nil for source node")
 	}
 
-	// Test invalid bus numbers - should return nil
-	invalidFormatPtr := GetOutputFormatForBus(nodePtr, 999)
+	// Test invalid bus numbers - should return errors
+	invalidFormatPtr, err := GetOutputFormatForBus(nodePtr, 999)
+	if err == nil {
+		t.Error("Expected error for invalid bus number")
+	} else {
+		t.Logf("✓ Invalid output bus correctly rejected: %v", err)
+	}
 	if invalidFormatPtr != nil {
 		t.Error("Expected nil format for invalid bus number")
-	} else {
-		t.Logf("✓ Invalid output bus correctly returns nil format")
 	}
 
-	invalidInputFormatPtr := GetInputFormatForBus(nodePtr, 999)
+	invalidInputFormatPtr, err := GetInputFormatForBus(nodePtr, 999)
+	if err == nil {
+		t.Error("Expected error for invalid input bus number")
+	} else {
+		t.Logf("✓ Invalid input bus correctly rejected: %v", err)
+	}
 	if invalidInputFormatPtr != nil {
 		t.Error("Expected nil format for invalid input bus number")
-	} else {
-		t.Logf("✓ Invalid input bus correctly returns nil format")
 	}
 }
 
@@ -201,15 +260,28 @@ func TestGetFormatForBus(t *testing.T) {
 
 func TestCreateMixer(t *testing.T) {
 	// Test mixer creation
-	mixerPtr := CreateMixer()
-	if mixerPtr == nil {
-		t.Fatal("CreateMixer returned nil")
+	mixerPtr, err := CreateMixer()
+	if err != nil {
+		t.Fatalf("CreateMixer failed: %v", err)
 	}
-	defer ReleaseMixer(mixerPtr)
+	if mixerPtr == nil {
+		t.Fatal("CreateMixer returned nil pointer")
+	}
+	defer func() {
+		if err := ReleaseMixer(mixerPtr); err != nil {
+			t.Logf("Warning: Failed to release mixer: %v", err)
+		}
+	}()
 
 	// Test basic node properties
-	inputs := GetNumberOfInputs(mixerPtr)
-	outputs := GetNumberOfOutputs(mixerPtr)
+	inputs, err := GetNumberOfInputs(mixerPtr)
+	if err != nil {
+		t.Fatalf("Failed to get number of inputs: %v", err)
+	}
+	outputs, err := GetNumberOfOutputs(mixerPtr)
+	if err != nil {
+		t.Fatalf("Failed to get number of outputs: %v", err)
+	}
 
 	t.Logf("✓ Mixer has %d inputs and %d outputs", inputs, outputs)
 
@@ -219,7 +291,11 @@ func TestCreateMixer(t *testing.T) {
 	}
 
 	// Test that it's not yet installed on an engine
-	if IsInstalledOnEngine(mixerPtr) {
+	installed, err := IsInstalledOnEngine(mixerPtr)
+	if err != nil {
+		t.Fatalf("Failed to check if installed on engine: %v", err)
+	}
+	if installed {
 		t.Error("Mixer should not be installed on engine initially")
 	}
 
@@ -227,15 +303,22 @@ func TestCreateMixer(t *testing.T) {
 }
 
 func TestMixerVolumeAndPan(t *testing.T) {
-	mixerPtr := CreateMixer()
-	if mixerPtr == nil {
-		t.Fatal("CreateMixer returned nil")
+	mixerPtr, err := CreateMixer()
+	if err != nil {
+		t.Fatalf("CreateMixer failed: %v", err)
 	}
-	defer ReleaseMixer(mixerPtr)
+	if mixerPtr == nil {
+		t.Fatal("CreateMixer returned nil pointer")
+	}
+	defer func() {
+		if err := ReleaseMixer(mixerPtr); err != nil {
+			t.Logf("Warning: Failed to release mixer: %v", err)
+		}
+	}()
 
 	// Test setting volume
 	testVolume := float32(0.75)
-	err := SetMixerVolume(mixerPtr, testVolume, 0)
+	err = SetMixerVolume(mixerPtr, testVolume, 0)
 	if err != nil {
 		t.Fatalf("Failed to set mixer volume: %v", err)
 	}
@@ -265,14 +348,21 @@ func TestMixerVolumeAndPan(t *testing.T) {
 }
 
 func TestMixerVolumeValidation(t *testing.T) {
-	mixerPtr := CreateMixer()
-	if mixerPtr == nil {
-		t.Fatal("CreateMixer returned nil")
+	mixerPtr, err := CreateMixer()
+	if err != nil {
+		t.Fatalf("CreateMixer failed: %v", err)
 	}
-	defer ReleaseMixer(mixerPtr)
+	if mixerPtr == nil {
+		t.Fatal("CreateMixer returned nil pointer")
+	}
+	defer func() {
+		if err := ReleaseMixer(mixerPtr); err != nil {
+			t.Logf("Warning: Failed to release mixer: %v", err)
+		}
+	}()
 
 	// Test invalid volume values
-	err := SetMixerVolume(mixerPtr, -0.1, 0)
+	err = SetMixerVolume(mixerPtr, -0.1, 0)
 	if err == nil {
 		t.Error("Expected error for negative volume")
 	} else {
@@ -288,14 +378,21 @@ func TestMixerVolumeValidation(t *testing.T) {
 }
 
 func TestMixerPanValidation(t *testing.T) {
-	mixerPtr := CreateMixer()
-	if mixerPtr == nil {
-		t.Fatal("CreateMixer returned nil")
+	mixerPtr, err := CreateMixer()
+	if err != nil {
+		t.Fatalf("CreateMixer failed: %v", err)
 	}
-	defer ReleaseMixer(mixerPtr)
+	if mixerPtr == nil {
+		t.Fatal("CreateMixer returned nil pointer")
+	}
+	defer func() {
+		if err := ReleaseMixer(mixerPtr); err != nil {
+			t.Logf("Warning: Failed to release mixer: %v", err)
+		}
+	}()
 
 	// Test invalid pan values
-	err := SetMixerPan(mixerPtr, -1.1, 0)
+	err = SetMixerPan(mixerPtr, -1.1, 0)
 	if err == nil {
 		t.Error("Expected error for pan < -1.0")
 	} else {
@@ -311,25 +408,39 @@ func TestMixerPanValidation(t *testing.T) {
 }
 
 func TestMixerLogInfo(t *testing.T) {
-	mixerPtr := CreateMixer()
-	if mixerPtr == nil {
-		t.Fatal("CreateMixer returned nil")
+	mixerPtr, err := CreateMixer()
+	if err != nil {
+		t.Fatalf("CreateMixer failed: %v", err)
 	}
-	defer ReleaseMixer(mixerPtr)
+	if mixerPtr == nil {
+		t.Fatal("CreateMixer returned nil pointer")
+	}
+	defer func() {
+		if err := ReleaseMixer(mixerPtr); err != nil {
+			t.Logf("Warning: Failed to release mixer: %v", err)
+		}
+	}()
 
 	// This should log mixer information to console
 	t.Logf("✓ Logging mixer info:")
-	LogInfo(mixerPtr)
+	err = LogInfo(mixerPtr)
+	if err != nil {
+		t.Fatalf("Failed to log mixer info: %v", err)
+	}
 }
 
 func TestMixerNilPointerHandling(t *testing.T) {
 	// Test all mixer functions handle nil pointers gracefully
 
-	// Mixer functions
-	ReleaseMixer(nil) // Should not crash
-	t.Logf("✓ ReleaseMixer(nil) handled gracefully")
+	// ReleaseMixer should handle nil pointers gracefully
+	err := ReleaseMixer(nil)
+	if err == nil {
+		t.Error("Expected error for nil mixer pointer")
+	} else {
+		t.Logf("✓ ReleaseMixer(nil) correctly rejected: %v", err)
+	}
 
-	err := SetMixerVolume(nil, 0.5, 0)
+	err = SetMixerVolume(nil, 0.5, 0)
 	if err == nil {
 		t.Error("Expected error for nil mixer pointer")
 	} else {

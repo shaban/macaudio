@@ -47,17 +47,33 @@ func setupSharedPipeline() {
 	}
 
 	// Build the complete pipeline
-	err = sharedEngine.Attach(sharedToneNode.GetNodePtr())
+	sourceNodePtr, err := sharedToneNode.GetNodePtr()
+	if err != nil {
+		sharedEngine.Destroy()
+		panic("Failed to get source node pointer: " + err.Error())
+	}
+
+	err = sharedEngine.Attach(sourceNodePtr)
 	if err != nil {
 		panic("Failed to attach source node: " + err.Error())
 	}
 
-	err = sharedEngine.Connect(sharedToneNode.GetNodePtr(), sharedEngine.MainMixerNode(), 0, 0)
+	mainMixer, err := sharedEngine.MainMixerNode()
+	if err != nil {
+		panic("Failed to get main mixer node: " + err.Error())
+	}
+
+	err = sharedEngine.Connect(sourceNodePtr, mainMixer, 0, 0)
 	if err != nil {
 		panic("Failed to connect source to mixer: " + err.Error())
 	}
 
-	err = sharedEngine.Connect(sharedEngine.MainMixerNode(), sharedEngine.OutputNode(), 0, 0)
+	outputNode, err := sharedEngine.OutputNode()
+	if err != nil {
+		panic("Failed to get output node: " + err.Error())
+	}
+
+	err = sharedEngine.Connect(mainMixer, outputNode, 0, 0)
 	if err != nil {
 		panic("Failed to connect mixer to output: " + err.Error())
 	}
@@ -120,13 +136,17 @@ func TestEngine_SourceNode_AttachDetach(t *testing.T) {
 	defer sourceNode.Destroy()
 
 	// Test attach
-	err = eng.Attach(sourceNode.GetNodePtr())
+	nodePtr, err := sourceNode.GetNodePtr()
+	if err != nil {
+		t.Fatalf("Failed to get node pointer: %v", err)
+	}
+	err = eng.Attach(nodePtr)
 	if err != nil {
 		t.Fatalf("Failed to attach node: %v", err)
 	}
 
 	// Test detach
-	err = eng.Detach(sourceNode.GetNodePtr())
+	err = eng.Detach(nodePtr)
 	if err != nil {
 		t.Fatalf("Failed to detach node: %v", err)
 	}
@@ -145,14 +165,23 @@ func TestEngine_SourceNode_Connect(t *testing.T) {
 	}
 	defer sourceNode.Destroy()
 
-	err = eng.Attach(sourceNode.GetNodePtr())
+	nodePtr, err := sourceNode.GetNodePtr()
+	if err != nil {
+		t.Fatalf("Failed to get node pointer: %v", err)
+	}
+
+	err = eng.Attach(nodePtr)
 	if err != nil {
 		t.Fatalf("Failed to attach node: %v", err)
 	}
-	defer eng.Detach(sourceNode.GetNodePtr())
+	defer eng.Detach(nodePtr)
 
 	// Test connection
-	err = eng.Connect(sourceNode.GetNodePtr(), eng.MainMixerNode(), 0, 0)
+	mainMixer, err := eng.MainMixerNode()
+	if err != nil {
+		t.Fatalf("Failed to get main mixer: %v", err)
+	}
+	err = eng.Connect(nodePtr, mainMixer, 0, 0)
 	if err != nil {
 		t.Fatalf("Failed to connect nodes: %v", err)
 	}
@@ -185,17 +214,29 @@ func TestEngine_SourceNode_FullPipeline(t *testing.T) {
 	}
 
 	// Setup complete pipeline
-	err = eng.Attach(sourceNode.GetNodePtr())
+	nodePtr, err := sourceNode.GetNodePtr()
+	if err != nil {
+		t.Fatalf("Failed to get node pointer: %v", err)
+	}
+	err = eng.Attach(nodePtr)
 	if err != nil {
 		t.Fatalf("Failed to attach node: %v", err)
 	}
 
-	err = eng.Connect(sourceNode.GetNodePtr(), eng.MainMixerNode(), 0, 0)
+	mainMixer, err := eng.MainMixerNode()
+	if err != nil {
+		t.Fatalf("Failed to get main mixer: %v", err)
+	}
+	err = eng.Connect(nodePtr, mainMixer, 0, 0)
 	if err != nil {
 		t.Fatalf("Failed to connect source to mixer: %v", err)
 	}
 
-	err = eng.Connect(eng.MainMixerNode(), eng.OutputNode(), 0, 0)
+	outputNode, err := eng.OutputNode()
+	if err != nil {
+		t.Fatalf("Failed to get output node: %v", err)
+	}
+	err = eng.Connect(mainMixer, outputNode, 0, 0)
 	if err != nil {
 		t.Fatalf("Failed to connect mixer to output: %v", err)
 	}
@@ -272,12 +313,21 @@ func TestEngine_SourceNode_MultipleNodes(t *testing.T) {
 		}
 		defer nodes[i].Destroy()
 
-		err = eng.Attach(nodes[i].GetNodePtr())
+		nodePtr, err := nodes[i].GetNodePtr()
+		if err != nil {
+			t.Fatalf("Failed to get node pointer %d: %v", i, err)
+		}
+
+		err = eng.Attach(nodePtr)
 		if err != nil {
 			t.Fatalf("Failed to attach node %d: %v", i, err)
 		}
 
-		err = eng.Connect(nodes[i].GetNodePtr(), eng.MainMixerNode(), 0, i)
+		mainMixer, err := eng.MainMixerNode()
+		if err != nil {
+			t.Fatalf("Failed to get main mixer for node %d: %v", i, err)
+		}
+		err = eng.Connect(nodePtr, mainMixer, 0, i)
 		if err != nil {
 			t.Fatalf("Failed to connect node %d: %v", i, err)
 		}
@@ -363,19 +413,35 @@ func TestMonoChannelRouting(t *testing.T) {
 	}
 	defer monoNode.Destroy()
 
-	err = eng.Attach(monoNode.GetNodePtr())
+	monoNodePtr, err := monoNode.GetNodePtr()
+	if err != nil {
+		t.Fatalf("Failed to get mono node pointer: %v", err)
+	}
+	err = eng.Attach(monoNodePtr)
 	if err != nil {
 		t.Fatalf("Failed to attach mono node: %v", err)
 	}
 
 	// Use explicit format for mono
-	monoFormatPtr := monoNode.GetFormatPtr()
-	err = eng.ConnectWithFormat(monoNode.GetNodePtr(), eng.MainMixerNode(), 0, 0, monoFormatPtr)
+	monoFormatPtr, err := monoNode.GetFormatPtr()
+	if err != nil {
+		t.Fatalf("Failed to get mono format pointer: %v", err)
+	}
+
+	mainMixer, err := eng.MainMixerNode()
+	if err != nil {
+		t.Fatalf("Failed to get main mixer: %v", err)
+	}
+	err = eng.ConnectWithFormat(monoNodePtr, mainMixer, 0, 0, monoFormatPtr)
 	if err != nil {
 		t.Fatalf("Failed to connect mono node: %v", err)
 	}
 
-	err = eng.Connect(eng.MainMixerNode(), eng.OutputNode(), 0, 0)
+	outputNode, err := eng.OutputNode()
+	if err != nil {
+		t.Fatalf("Failed to get output node: %v", err)
+	}
+	err = eng.Connect(mainMixer, outputNode, 0, 0)
 	if err != nil {
 		t.Fatalf("Failed to connect mixer to output: %v", err)
 	}
@@ -428,17 +494,29 @@ func TestStereoChannelHandling(t *testing.T) {
 	}
 	defer stereoNode.Destroy()
 
-	err = eng.Attach(stereoNode.GetNodePtr())
+	stereoNodePtr, err := stereoNode.GetNodePtr()
+	if err != nil {
+		t.Fatalf("Failed to get stereo node pointer: %v", err)
+	}
+	err = eng.Attach(stereoNodePtr)
 	if err != nil {
 		t.Fatalf("Failed to attach stereo node: %v", err)
 	}
 
-	err = eng.Connect(stereoNode.GetNodePtr(), eng.MainMixerNode(), 0, 0)
+	mainMixer, err := eng.MainMixerNode()
+	if err != nil {
+		t.Fatalf("Failed to get main mixer: %v", err)
+	}
+	err = eng.Connect(stereoNodePtr, mainMixer, 0, 0)
 	if err != nil {
 		t.Fatalf("Failed to connect stereo node: %v", err)
 	}
 
-	err = eng.Connect(eng.MainMixerNode(), eng.OutputNode(), 0, 0)
+	outputNode, err := eng.OutputNode()
+	if err != nil {
+		t.Fatalf("Failed to get output node: %v", err)
+	}
+	err = eng.Connect(mainMixer, outputNode, 0, 0)
 	if err != nil {
 		t.Fatalf("Failed to connect mixer to output: %v", err)
 	}
@@ -488,17 +566,29 @@ func TestMonoVsStereoHandling(t *testing.T) {
 	defer stereoNode.Destroy()
 
 	// Setup stereo pipeline (no explicit format needed - stereo is default)
-	err = eng.Attach(stereoNode.GetNodePtr())
+	stereoNodePtr, err := stereoNode.GetNodePtr()
+	if err != nil {
+		t.Fatalf("Failed to get stereo node pointer: %v", err)
+	}
+	err = eng.Attach(stereoNodePtr)
 	if err != nil {
 		t.Fatalf("Failed to attach stereo node: %v", err)
 	}
 
-	err = eng.Connect(stereoNode.GetNodePtr(), eng.MainMixerNode(), 0, 0)
+	mainMixer, err := eng.MainMixerNode()
+	if err != nil {
+		t.Fatalf("Failed to get main mixer: %v", err)
+	}
+	err = eng.Connect(stereoNodePtr, mainMixer, 0, 0)
 	if err != nil {
 		t.Fatalf("Failed to connect stereo node: %v", err)
 	}
 
-	err = eng.Connect(eng.MainMixerNode(), eng.OutputNode(), 0, 0)
+	outputNode, err := eng.OutputNode()
+	if err != nil {
+		t.Fatalf("Failed to get output node: %v", err)
+	}
+	err = eng.Connect(mainMixer, outputNode, 0, 0)
 	if err != nil {
 		t.Fatalf("Failed to connect mixer to output: %v", err)
 	}
@@ -517,9 +607,14 @@ func TestMonoVsStereoHandling(t *testing.T) {
 
 	// Stop and detach stereo
 	eng.Stop()
-	err = eng.Detach(stereoNode.GetNodePtr())
+	detachPtr, err := stereoNode.GetNodePtr()
 	if err != nil {
-		t.Logf("Warning: failed to detach stereo node: %v", err)
+		t.Logf("Warning: failed to get stereo node pointer for detach: %v", err)
+	} else {
+		err = eng.Detach(detachPtr)
+		if err != nil {
+			t.Logf("Warning: failed to detach stereo node: %v", err)
+		}
 	}
 
 	// =============================================================================
@@ -534,16 +629,27 @@ func TestMonoVsStereoHandling(t *testing.T) {
 	defer monoNode.Destroy()
 
 	// Setup mono pipeline with EXPLICIT FORMAT
-	err = eng.Attach(monoNode.GetNodePtr())
+	monoNodePtr, err := monoNode.GetNodePtr()
+	if err != nil {
+		t.Fatalf("Failed to get mono node pointer: %v", err)
+	}
+	err = eng.Attach(monoNodePtr)
 	if err != nil {
 		t.Fatalf("Failed to attach mono node: %v", err)
 	}
 
 	// CRITICAL: Use ConnectWithFormat to pass the mono format explicitly
-	monoFormatPtr := monoNode.GetFormatPtr()
+	monoFormatPtr, err := monoNode.GetFormatPtr()
+	if err != nil {
+		t.Fatalf("Failed to get mono format pointer: %v", err)
+	}
 	t.Logf("Mono format pointer: %v", monoFormatPtr)
 
-	err = eng.ConnectWithFormat(monoNode.GetNodePtr(), eng.MainMixerNode(), 0, 0, monoFormatPtr)
+	mainMixer2, err := eng.MainMixerNode()
+	if err != nil {
+		t.Fatalf("Failed to get main mixer: %v", err)
+	}
+	err = eng.ConnectWithFormat(monoNodePtr, mainMixer2, 0, 0, monoFormatPtr)
 	if err != nil {
 		t.Fatalf("Failed to connect mono node with format: %v", err)
 	}
@@ -593,7 +699,10 @@ func TestSilentVsToneNodes(t *testing.T) {
 	}
 	defer silentNode.Destroy()
 
-	if silentNode.GetNodePtr() == nil {
+	silentPtr, err := silentNode.GetNodePtr()
+	if err != nil {
+		t.Errorf("Failed to get silent node pointer: %v", err)
+	} else if silentPtr == nil {
 		t.Error("Silent node should have valid pointer")
 	}
 
@@ -620,7 +729,10 @@ func TestSilentVsToneNodes(t *testing.T) {
 	}
 	defer toneNode.Destroy()
 
-	if toneNode.GetNodePtr() == nil {
+	tonePtr, err := toneNode.GetNodePtr()
+	if err != nil {
+		t.Errorf("Failed to get tone node pointer: %v", err)
+	} else if tonePtr == nil {
 		t.Error("Tone node should have valid pointer")
 	}
 

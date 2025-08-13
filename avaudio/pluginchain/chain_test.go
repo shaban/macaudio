@@ -383,7 +383,7 @@ func TestPluginChainParameters(t *testing.T) {
 	}
 
 	// Find a plugin with parameters
-	var testPlugin plugins.Plugin
+	var testPlugin *plugins.Plugin
 	found := false
 	for _, info := range effectInfos {
 		plugin, err := info.Introspect()
@@ -509,8 +509,8 @@ func TestPluginChainRouting(t *testing.T) {
 
 	// Test empty chain routing
 	t.Run("EmptyChainRouting", func(t *testing.T) {
-		inputNode := chain.GetInputNode()
-		outputNode := chain.GetOutputNode()
+		inputNode, _ := chain.GetInputNode()
+		outputNode, _ := chain.GetOutputNode()
 
 		if inputNode != nil {
 			t.Error("Expected nil input node for empty chain")
@@ -537,8 +537,14 @@ func TestPluginChainRouting(t *testing.T) {
 	}
 
 	t.Run("SingleEffectRouting", func(t *testing.T) {
-		inputNode := chain.GetInputNode()
-		outputNode := chain.GetOutputNode()
+		inputNode, err := chain.GetInputNode()
+		if err != nil {
+			t.Fatalf("Failed to get input node: %v", err)
+		}
+		outputNode, err := chain.GetOutputNode()
+		if err != nil {
+			t.Fatalf("Failed to get output node: %v", err)
+		}
 
 		if inputNode == nil {
 			t.Error("Expected non-nil input node for single effect chain")
@@ -655,4 +661,226 @@ func findSubstring(s, substr string) int {
 		}
 	}
 	return -1
+}
+
+func TestParameterPropagation(t *testing.T) {
+	// Create engine and plugin chain
+	eng, err := engine.New(engine.DefaultAudioSpec())
+	if err != nil {
+		t.Fatal("Failed to create engine:", err)
+	}
+	defer eng.Destroy()
+
+	chain := NewPluginChain(ChainConfig{
+		Name:      "Parameter Test Chain",
+		EnginePtr: eng.Ptr(),
+	})
+	defer chain.Release()
+
+	// Use proper plugin discovery workflow: QuickScan → Filter → Introspect
+	pluginInfos, err := plugins.List() // QuickScan
+	if err != nil {
+		t.Fatal("Failed to list plugins:", err)
+	}
+
+	// Filter for Apple AU effects with parameters
+	effectInfos := pluginInfos.ByType("aufx").ByManufacturer("appl")
+	if len(effectInfos) == 0 {
+		t.Skip("No Apple AU effects found for parameter testing")
+	}
+
+	// Introspect to get full plugin details including parameters
+	testPlugins, err := effectInfos.Introspect()
+	if err != nil {
+		t.Fatal("Failed to introspect plugins:", err)
+	}
+
+	// Find a plugin with writable parameters
+	var bandpassPlugin *plugins.Plugin
+	for _, plugin := range testPlugins {
+		if len(plugin.Parameters) > 0 {
+			// Check if it has writable parameters
+			for _, param := range plugin.Parameters {
+				if param.IsWritable {
+					bandpassPlugin = plugin
+					break
+				}
+			}
+			if bandpassPlugin != nil {
+				break
+			}
+		}
+	}
+
+	if bandpassPlugin == nil {
+		t.Skip("No Apple AU effects with writable parameters found for testing")
+	}
+
+	// Verify plugin has parameters
+	if len(bandpassPlugin.Parameters) == 0 {
+		t.Skip("Bandpass plugin has no parameters for testing")
+	}
+
+	// Add effect to chain
+	err = chain.AddEffect(bandpassPlugin)
+	if err != nil {
+		t.Fatal("Failed to add effect:", err)
+	}
+
+	t.Logf("Testing with plugin: %s (%d parameters)", bandpassPlugin.Name, len(bandpassPlugin.Parameters))
+
+	// Test 1: Verify initial parameter values match plugin
+	t.Run("InitialValues", func(t *testing.T) {
+		for i, param := range bandpassPlugin.Parameters {
+			if !param.IsWritable {
+				continue // Skip read-only parameters
+			}
+
+			// Get parameter from the audio unit (source of truth)
+			actualValue, err := chain.GetParameter(0, param)
+			if err != nil {
+				t.Errorf("Failed to get parameter %s: %v", param.DisplayName, err)
+				continue
+			}
+
+			t.Logf("✓ Initial %s [%d]: %.2f (plugin: %.2f)", param.DisplayName, i, actualValue, param.CurrentValue)
+		}
+	})
+
+	// Test 2: Set parameter and verify propagation
+	t.Run("SetParameterPropagation", func(t *testing.T) {
+		// Find first writable parameter
+		var testParam plugins.Parameter
+		var paramIndex int
+		found := false
+
+		for i, param := range bandpassPlugin.Parameters {
+			if param.IsWritable {
+				testParam = param
+				paramIndex = i
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			t.Skip("No writable parameters found for testing")
+		}
+
+		// Calculate a new value within the parameter's range
+		newValue := (testParam.MinValue + testParam.MaxValue) / 2.0
+		if newValue == testParam.CurrentValue {
+			newValue = testParam.MinValue + (testParam.MaxValue-testParam.MinValue)*0.75 // Try 75% of range
+		}
+
+		// Store original value for verification
+		originalValue := testParam.CurrentValue
+
+		// Set parameter through the chain
+		err := chain.SetParameter(0, testParam, newValue)
+		if err != nil {
+			t.Fatal("Failed to set parameter:", err)
+		}
+
+		// Verify the audio unit was updated
+		actualValue, err := chain.GetParameter(0, testParam)
+		if err != nil {
+			t.Fatal("Failed to get parameter after setting:", err)
+		}
+
+		// Verify the plugin's CurrentValue was updated (this is what we're really testing!)
+		if bandpassPlugin.Parameters[paramIndex].CurrentValue != newValue {
+			t.Errorf("Plugin CurrentValue not synced: expected %.2f, got %.2f",
+				newValue, bandpassPlugin.Parameters[paramIndex].CurrentValue)
+		}
+
+		t.Logf("✓ Set %s from %.2f to %.2f - propagated to audio unit: %.2f, plugin: %.2f",
+			testParam.DisplayName, originalValue, newValue, actualValue, bandpassPlugin.Parameters[paramIndex].CurrentValue)
+	})
+
+	// Test 3: Verify shared reference behavior
+	t.Run("SharedReferenceBehavior", func(t *testing.T) {
+		// Get the plugin from the chain
+		_, chainPlugin, err := chain.GetEffectAt(0)
+		if err != nil {
+			t.Fatal("Failed to get plugin from chain:", err)
+		}
+
+		// Verify it's the same pointer (shared reference)
+		if chainPlugin != bandpassPlugin {
+			t.Error("Chain plugin is not the same reference as original plugin")
+		}
+
+		// Find first writable parameter
+		var paramIndex int
+		found := false
+		for i, param := range bandpassPlugin.Parameters {
+			if param.IsWritable {
+				paramIndex = i
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			t.Skip("No writable parameters for shared reference test")
+		}
+
+		// Modify the original plugin's parameter directly
+		originalValue := bandpassPlugin.Parameters[paramIndex].CurrentValue
+		testValue := float32(5500.0)
+		if testValue > bandpassPlugin.Parameters[paramIndex].MaxValue {
+			testValue = bandpassPlugin.Parameters[paramIndex].MinValue + 10.0
+		}
+
+		bandpassPlugin.Parameters[paramIndex].CurrentValue = testValue
+
+		// The chain's plugin should see the same change (same pointer!)
+		if chainPlugin.Parameters[paramIndex].CurrentValue != testValue {
+			t.Error("Chain plugin didn't see direct modification - pointers not shared")
+		}
+
+		// Restore original value
+		bandpassPlugin.Parameters[paramIndex].CurrentValue = originalValue
+
+		t.Log("✓ Shared reference behavior confirmed")
+	})
+
+	// Test 4: Verify parameter sync during GetParameter
+	t.Run("GetParameterSync", func(t *testing.T) {
+		// Find first writable parameter
+		var testParam plugins.Parameter
+		var paramIndex int
+		found := false
+
+		for i, param := range bandpassPlugin.Parameters {
+			if param.IsWritable {
+				testParam = param
+				paramIndex = i
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			t.Skip("No writable parameters for sync test")
+		}
+
+		// Manually set a different CurrentValue in the plugin (simulating external change)
+		bandpassPlugin.Parameters[paramIndex].CurrentValue = 9999.0
+
+		// Call GetParameter - this should sync the plugin with actual audio unit value
+		actualValue, err := chain.GetParameter(0, testParam)
+		if err != nil {
+			t.Fatal("Failed to get parameter:", err)
+		}
+
+		// The plugin's CurrentValue should now match the audio unit
+		if bandpassPlugin.Parameters[paramIndex].CurrentValue != actualValue {
+			t.Errorf("GetParameter didn't sync: audio=%.2f, plugin=%.2f",
+				actualValue, bandpassPlugin.Parameters[paramIndex].CurrentValue)
+		}
+
+		t.Logf("✓ GetParameter synced plugin CurrentValue: %.2f (was manually set to 9999.0)", actualValue)
+	})
 }

@@ -2,7 +2,6 @@ package engine
 
 import (
 	"testing"
-	"unsafe"
 
 	"github.com/shaban/macaudio/avaudio/node"
 )
@@ -151,9 +150,9 @@ func TestEngine_DisconnectNodeInput(t *testing.T) {
 	defer engine.Destroy()
 
 	// Create a mixer node to test with
-	mixerPtr := node.CreateMixer()
-	if mixerPtr == nil {
-		t.Fatal("Failed to create mixer node")
+	mixerPtr, err := node.CreateMixer()
+	if err != nil || mixerPtr == nil {
+		t.Fatalf("Failed to create mixer node: %v", err)
 	}
 	defer node.ReleaseMixer(mixerPtr)
 
@@ -183,17 +182,17 @@ func TestEngine_DisconnectNodeInput(t *testing.T) {
 func TestEngine_DisconnectNodeInputNilEngine(t *testing.T) {
 	var engine *Engine
 
-	// Test with nil engine
-	err := engine.DisconnectNodeInput(unsafe.Pointer(uintptr(1)), 0)
+	// Test with nil engine - should reject both nil engine and nil node
+	err := engine.DisconnectNodeInput(nil, 0)
 	if err == nil {
 		t.Error("Expected error for nil engine")
 	} else {
 		t.Logf("✓ Nil engine correctly rejected: %v", err)
 	}
 
-	// Test with engine having nil ptr
+	// Test with engine having nil ptr - should also reject nil node pointer
 	engine = &Engine{ptr: nil}
-	err = engine.DisconnectNodeInput(unsafe.Pointer(uintptr(1)), 0)
+	err = engine.DisconnectNodeInput(nil, 0)
 	if err == nil {
 		t.Error("Expected error for engine with nil ptr")
 	} else {
@@ -211,16 +210,20 @@ func TestEngine_MixerIntegration(t *testing.T) {
 	defer engine.Destroy()
 
 	// Create a mixer node
-	mixerPtr := node.CreateMixer()
-	if mixerPtr == nil {
-		t.Fatal("Failed to create mixer node")
+	mixerPtr, err := node.CreateMixer()
+	if err != nil || mixerPtr == nil {
+		t.Fatalf("Failed to create mixer node: %v", err)
 	}
 	defer node.ReleaseMixer(mixerPtr)
 
 	t.Logf("✓ Created mixer node")
 
 	// Test that the mixer is not initially attached to the engine
-	if node.IsInstalledOnEngine(mixerPtr) {
+	installed, err := node.IsInstalledOnEngine(mixerPtr)
+	if err != nil {
+		t.Fatalf("Error checking if mixer is installed on engine: %v", err)
+	}
+	if installed {
 		t.Error("Mixer should not be installed on engine initially")
 	} else {
 		t.Logf("✓ Mixer correctly not attached initially")
@@ -234,7 +237,11 @@ func TestEngine_MixerIntegration(t *testing.T) {
 	t.Logf("✓ Successfully attached mixer to engine")
 
 	// Test that the mixer is now attached
-	if !node.IsInstalledOnEngine(mixerPtr) {
+	installed, err = node.IsInstalledOnEngine(mixerPtr)
+	if err != nil {
+		t.Fatalf("Error checking if mixer is installed on engine: %v", err)
+	}
+	if !installed {
 		t.Error("Mixer should be installed on engine after attach")
 	} else {
 		t.Logf("✓ Mixer correctly attached to engine")
@@ -257,7 +264,11 @@ func TestEngine_MixerIntegration(t *testing.T) {
 	t.Logf("✓ Successfully detached mixer from engine")
 
 	// Test that the mixer is no longer attached
-	if node.IsInstalledOnEngine(mixerPtr) {
+	installed, err = node.IsInstalledOnEngine(mixerPtr)
+	if err != nil {
+		t.Fatalf("Error checking if mixer is installed on engine: %v", err)
+	}
+	if installed {
 		t.Error("Mixer should not be installed on engine after detach")
 	} else {
 		t.Logf("✓ Mixer correctly detached from engine")
@@ -279,15 +290,24 @@ func TestEngine_MainMixerAccess(t *testing.T) {
 	t.Logf("✓ Got main mixer node pointer: %p", mainMixerPtr)
 
 	// Test that main mixer is already "attached" (it's built-in)
-	if !node.IsInstalledOnEngine(mainMixerPtr) {
+	installed, err := node.IsInstalledOnEngine(mainMixerPtr)
+	if err != nil {
+		t.Errorf("Error checking if main mixer is installed on engine: %v", err)
+	} else if !installed {
 		t.Error("Main mixer should be installed on engine by default")
 	} else {
 		t.Logf("✓ Main mixer is correctly installed on engine")
 	}
 
 	// Test getting properties of the main mixer
-	inputs := node.GetNumberOfInputs(mainMixerPtr)
-	outputs := node.GetNumberOfOutputs(mainMixerPtr)
+	inputs, err := node.GetNumberOfInputs(mainMixerPtr)
+	if err != nil {
+		t.Fatalf("Failed to get number of inputs for main mixer: %v", err)
+	}
+	outputs, err := node.GetNumberOfOutputs(mainMixerPtr)
+	if err != nil {
+		t.Fatalf("Failed to get number of outputs for main mixer: %v", err)
+	}
 
 	t.Logf("✓ Main mixer has %d inputs and %d outputs", inputs, outputs)
 
@@ -324,15 +344,15 @@ func TestEngine_ConnectionWorkflow(t *testing.T) {
 	defer engine.Destroy()
 
 	// Create two mixer nodes for testing connections
-	mixer1Ptr := node.CreateMixer()
-	if mixer1Ptr == nil {
-		t.Fatal("Failed to create first mixer")
+	mixer1Ptr, err := node.CreateMixer()
+	if err != nil || mixer1Ptr == nil {
+		t.Fatalf("Failed to create first mixer: %v", err)
 	}
 	defer node.ReleaseMixer(mixer1Ptr)
 
-	mixer2Ptr := node.CreateMixer()
-	if mixer2Ptr == nil {
-		t.Fatal("Failed to create second mixer")
+	mixer2Ptr, err := node.CreateMixer()
+	if err != nil || mixer2Ptr == nil {
+		t.Fatalf("Failed to create second mixer: %v", err)
 	}
 	defer node.ReleaseMixer(mixer2Ptr)
 

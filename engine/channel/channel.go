@@ -26,7 +26,7 @@ type Channel interface {
 
 	// Plugin Chain Management
 	GetPluginChain() *pluginchain.PluginChain
-	AddEffect(plugin plugins.Plugin) error
+	AddEffect(plugin *plugins.Plugin) error
 	AddEffectFromPluginInfo(pluginInfo plugins.PluginInfo) error
 
 	// Routing
@@ -55,7 +55,7 @@ type BaseChannel struct {
 	enginePtr         unsafe.Pointer
 	engineInstance    *engine.Engine // Reference to engine for accessing AudioSpec
 	pluginChain       *pluginchain.PluginChain
-	outputMixer       unsafe.Pointer   // For volume and mute control (AVAudioMixerNode)
+	outputMixer       unsafe.Pointer   // For volume and mute control (Node)
 	sends             map[string]*Send // Auxiliary sends
 	released          bool
 	connectedToMaster bool // Track master connection state
@@ -87,9 +87,9 @@ func NewBaseChannel(config BaseChannelConfig) (*BaseChannel, error) {
 	})
 
 	// Create output mixer for volume and mute control
-	outputMixer := node.CreateMixer()
-	if outputMixer == nil {
-		return nil, fmt.Errorf("failed to create output mixer for channel %s", config.Name)
+	outputMixer, err := node.CreateMixer()
+	if err != nil || outputMixer == nil {
+		return nil, fmt.Errorf("failed to create output mixer for channel %s: %v", config.Name, err)
 	}
 
 	return &BaseChannel{
@@ -181,7 +181,7 @@ func (bc *BaseChannel) GetPluginChain() *pluginchain.PluginChain {
 }
 
 // AddEffect adds an effect to the channel's plugin chain
-func (bc *BaseChannel) AddEffect(plugin plugins.Plugin) error {
+func (bc *BaseChannel) AddEffect(plugin *plugins.Plugin) error {
 	if bc.released {
 		return fmt.Errorf("channel has been released")
 	}
@@ -216,7 +216,8 @@ func (bc *BaseChannel) GetOutputNode() unsafe.Pointer {
 func (bc *BaseChannel) GetInputNode() unsafe.Pointer {
 	// If we have effects in the plugin chain, input goes to the chain
 	if bc.pluginChain != nil && !bc.pluginChain.IsEmpty() {
-		return bc.pluginChain.GetInputNode()
+		inputNode, _ := bc.pluginChain.GetInputNode()
+		return inputNode
 	}
 
 	// Otherwise, input goes directly to output mixer
@@ -368,13 +369,16 @@ func (bc *BaseChannel) ConnectToMaster(eng *engine.Engine) error {
 	}
 
 	// Get main mixer node from engine
-	mainMixerPtr := eng.MainMixerNode()
+	mainMixerPtr, err := eng.MainMixerNode()
+	if err != nil {
+		return fmt.Errorf("failed to get main mixer node from engine: %w", err)
+	}
 	if mainMixerPtr == nil {
-		return fmt.Errorf("failed to get main mixer node from engine")
+		return fmt.Errorf("failed to get main mixer node from engine: returned nil pointer")
 	}
 
 	// Connect our output mixer to the main mixer (bus 0 to bus 0 for stereo)
-	err := eng.Connect(bc.outputMixer, mainMixerPtr, 0, 0)
+	err = eng.Connect(bc.outputMixer, mainMixerPtr, 0, 0)
 	if err != nil {
 		return fmt.Errorf("failed to connect channel to main mixer: %w", err)
 	}
@@ -397,13 +401,16 @@ func (bc *BaseChannel) DisconnectFromMaster(eng *engine.Engine) error {
 	}
 
 	// Get main mixer node from engine
-	mainMixerPtr := eng.MainMixerNode()
+	mainMixerPtr, err := eng.MainMixerNode()
+	if err != nil {
+		return fmt.Errorf("failed to get main mixer node from engine: %w", err)
+	}
 	if mainMixerPtr == nil {
-		return fmt.Errorf("failed to get main mixer node from engine")
+		return fmt.Errorf("failed to get main mixer node from engine: returned nil pointer")
 	}
 
 	// Disconnect the main mixer's input bus 0 (where our channel is connected)
-	err := eng.DisconnectNodeInput(mainMixerPtr, 0)
+	err = eng.DisconnectNodeInput(mainMixerPtr, 0)
 	if err != nil {
 		return fmt.Errorf("failed to disconnect channel from main mixer: %w", err)
 	}

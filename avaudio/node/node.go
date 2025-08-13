@@ -3,194 +3,24 @@ package node
 /*
 #cgo CFLAGS: -x objective-c -fobjc-arc
 #cgo LDFLAGS: -framework AVFoundation -framework AudioToolbox -framework Foundation
-#import <AVFoundation/AVFoundation.h>
+#include "native/node.m"
+#include <stdlib.h>
 
-// Generic bus operations that work on ANY AVAudioNode*
-void* audionode_input_format_for_bus(void* nodePtr, int bus) {
-    if (!nodePtr) {
-        NSLog(@"audionode_input_format_for_bus: nodePtr is NULL");
-        return NULL;
-    }
+// Function declarations - CGO resolves AudioNodeResult from .m file
+AudioNodeResult audionode_input_format_for_bus(void* nodePtr, int bus);
+AudioNodeResult audionode_output_format_for_bus(void* nodePtr, int bus);
+const char* audionode_get_number_of_inputs(void* nodePtr, int* result);
+const char* audionode_get_number_of_outputs(void* nodePtr, int* result);
+const char* audionode_is_installed_on_engine(void* nodePtr, bool* result);
+const char* audionode_log_info(void* nodePtr);
 
-    AVAudioNode* node = (__bridge AVAudioNode*)nodePtr;
-
-    if (bus < 0 || bus >= node.numberOfInputs) {
-        NSLog(@"audionode_input_format_for_bus: invalid bus %d (node has %d inputs)", bus, (int)node.numberOfInputs);
-        return NULL;
-    }
-
-    AVAudioFormat* format = [node inputFormatForBus:bus];
-    if (!format) {
-        NSLog(@"audionode_input_format_for_bus: no format for bus %d", bus);
-        return NULL;
-    }
-
-    NSLog(@"Got input format for bus %d: %.0f Hz, %d channels", bus, format.sampleRate, (int)format.channelCount);
-    return (__bridge void*)format;
-}
-
-void* audionode_output_format_for_bus(void* nodePtr, int bus) {
-    if (!nodePtr) {
-        NSLog(@"audionode_output_format_for_bus: nodePtr is NULL");
-        return NULL;
-    }
-
-    AVAudioNode* node = (__bridge AVAudioNode*)nodePtr;
-
-    if (bus < 0 || bus >= node.numberOfOutputs) {
-        NSLog(@"audionode_output_format_for_bus: invalid bus %d (node has %d outputs)", bus, (int)node.numberOfOutputs);
-        return NULL;
-    }
-
-    AVAudioFormat* format = [node outputFormatForBus:bus];
-    if (!format) {
-        NSLog(@"audionode_output_format_for_bus: no format for bus %d", bus);
-        return NULL;
-    }
-
-    NSLog(@"Got output format for bus %d: %.0f Hz, %d channels", bus, format.sampleRate, (int)format.channelCount);
-    return (__bridge void*)format;
-}
-
-int audionode_number_of_inputs(void* nodePtr) {
-    if (!nodePtr) {
-        NSLog(@"audionode_number_of_inputs: nodePtr is NULL");
-        return 0;
-    }
-
-    AVAudioNode* node = (__bridge AVAudioNode*)nodePtr;
-    int inputs = (int)node.numberOfInputs;
-    NSLog(@"Node has %d inputs", inputs);
-    return inputs;
-}
-
-int audionode_number_of_outputs(void* nodePtr) {
-    if (!nodePtr) {
-        NSLog(@"audionode_number_of_outputs: nodePtr is NULL");
-        return 0;
-    }
-
-    AVAudioNode* node = (__bridge AVAudioNode*)nodePtr;
-    int outputs = (int)node.numberOfOutputs;
-    NSLog(@"Node has %d outputs", outputs);
-    return outputs;
-}
-
-bool audionode_is_installed_on_engine(void* nodePtr) {
-    if (!nodePtr) {
-        NSLog(@"audionode_is_installed_on_engine: nodePtr is NULL");
-        return false;
-    }
-
-    AVAudioNode* node = (__bridge AVAudioNode*)nodePtr;
-    bool installed = node.engine != nil;
-    NSLog(@"Node installed on engine: %s", installed ? "YES" : "NO");
-    return installed;
-}
-
-void audionode_log_info(void* nodePtr) {
-    if (!nodePtr) {
-        NSLog(@"audionode_log_info: nodePtr is NULL");
-        return;
-    }
-
-    AVAudioNode* node = (__bridge AVAudioNode*)nodePtr;
-    NSLog(@"AudioNode Info:");
-    NSLog(@"  Class: %@", [node class]);
-    NSLog(@"  Inputs: %d", (int)node.numberOfInputs);
-    NSLog(@"  Outputs: %d", (int)node.numberOfOutputs);
-    NSLog(@"  Engine: %@", node.engine ? @"Connected" : @"Not connected");
-    NSLog(@"  Description: %@", node);
-}
-
-// AVAudioMixerNode specific functions
-void* audiomixer_create(void) {
-    AVAudioMixerNode* mixer = [[AVAudioMixerNode alloc] init];
-    NSLog(@"Created AVAudioMixerNode: %@", mixer);
-    return (__bridge_retained void*)mixer;
-}
-
-bool audiomixer_set_volume(void* mixerPtr, float volume, int inputBus) {
-    if (!mixerPtr) {
-        NSLog(@"audiomixer_set_volume: mixerPtr is NULL");
-        return false;
-    }
-
-    AVAudioMixerNode* mixer = (__bridge AVAudioMixerNode*)mixerPtr;
-
-    if (inputBus < 0 || inputBus >= mixer.numberOfInputs) {
-        NSLog(@"audiomixer_set_volume: invalid bus %d (mixer has %d inputs)", inputBus, (int)mixer.numberOfInputs);
-        return false;
-    }
-
-    mixer.volume = volume;
-    NSLog(@"Set mixer volume to %.2f on bus %d", volume, inputBus);
-    return true;
-}
-
-bool audiomixer_set_pan(void* mixerPtr, float pan, int inputBus) {
-    if (!mixerPtr) {
-        NSLog(@"audiomixer_set_pan: mixerPtr is NULL");
-        return false;
-    }
-
-    AVAudioMixerNode* mixer = (__bridge AVAudioMixerNode*)mixerPtr;
-
-    if (inputBus < 0 || inputBus >= mixer.numberOfInputs) {
-        NSLog(@"audiomixer_set_pan: invalid bus %d (mixer has %d inputs)", inputBus, (int)mixer.numberOfInputs);
-        return false;
-    }
-
-    mixer.pan = pan;
-    NSLog(@"Set mixer pan to %.2f on bus %d", pan, inputBus);
-    return true;
-}
-
-float audiomixer_get_volume(void* mixerPtr, int inputBus) {
-    if (!mixerPtr) {
-        NSLog(@"audiomixer_get_volume: mixerPtr is NULL");
-        return 0.0;
-    }
-
-    AVAudioMixerNode* mixer = (__bridge AVAudioMixerNode*)mixerPtr;
-
-    if (inputBus < 0 || inputBus >= mixer.numberOfInputs) {
-        NSLog(@"audiomixer_get_volume: invalid bus %d (mixer has %d inputs)", inputBus, (int)mixer.numberOfInputs);
-        return 0.0;
-    }
-
-    float volume = mixer.volume;
-    NSLog(@"Got mixer volume %.2f from bus %d", volume, inputBus);
-    return volume;
-}
-
-float audiomixer_get_pan(void* mixerPtr, int inputBus) {
-    if (!mixerPtr) {
-        NSLog(@"audiomixer_get_pan: mixerPtr is NULL");
-        return 0.0;
-    }
-
-    AVAudioMixerNode* mixer = (__bridge AVAudioMixerNode*)mixerPtr;
-
-    if (inputBus < 0 || inputBus >= mixer.numberOfInputs) {
-        NSLog(@"audiomixer_get_pan: invalid bus %d (mixer has %d inputs)", inputBus, (int)mixer.numberOfInputs);
-        return 0.0;
-    }
-
-    float pan = mixer.pan;
-    NSLog(@"Got mixer pan %.2f from bus %d", pan, inputBus);
-    return pan;
-}
-
-void audiomixer_release(void* mixerPtr) {
-    if (!mixerPtr) {
-        NSLog(@"audiomixer_release: mixerPtr is NULL");
-        return;
-    }
-
-    CFBridgingRelease(mixerPtr);
-    NSLog(@"Released AVAudioMixerNode");
-}
+// Mixer function declarations
+AudioNodeResult audiomixer_create(void);
+const char* audiomixer_set_volume(void* mixerPtr, float volume, int inputBus);
+const char* audiomixer_set_pan(void* mixerPtr, float pan, int inputBus);
+const char* audiomixer_get_volume(void* mixerPtr, int inputBus, float* result);
+const char* audiomixer_get_pan(void* mixerPtr, int inputBus, float* result);
+const char* audiomixer_release(void* mixerPtr);
 */
 import "C"
 import (
@@ -198,101 +28,112 @@ import (
 	"unsafe"
 )
 
-// Shared helper functions that ANY AVAudioNode can use
+// Generic AVAudioNode Functions
 // These work on the base AVAudioNode functionality that's consistent across all node types
 
 // GetInputFormatForBus returns the input format for the specified bus
-// Returns nil if the bus is invalid or no format is set
-func GetInputFormatForBus(nodePtr unsafe.Pointer, bus int) unsafe.Pointer {
+func GetInputFormatForBus(nodePtr unsafe.Pointer, bus int) (unsafe.Pointer, error) {
 	if nodePtr == nil {
-		return nil
+		return nil, errors.New("node pointer is nil")
 	}
-	return unsafe.Pointer(C.audionode_input_format_for_bus(nodePtr, C.int(bus)))
+	
+	result := C.audionode_input_format_for_bus(nodePtr, C.int(bus))
+	if result.error != nil {
+		return nil, errors.New(C.GoString(result.error))
+	}
+	return unsafe.Pointer(result.result), nil
 }
 
 // GetOutputFormatForBus returns the output format for the specified bus
-// Returns nil if the bus is invalid or no format is set
-func GetOutputFormatForBus(nodePtr unsafe.Pointer, bus int) unsafe.Pointer {
+func GetOutputFormatForBus(nodePtr unsafe.Pointer, bus int) (unsafe.Pointer, error) {
 	if nodePtr == nil {
-		return nil
+		return nil, errors.New("node pointer is nil")
 	}
-	return unsafe.Pointer(C.audionode_output_format_for_bus(nodePtr, C.int(bus)))
+	
+	result := C.audionode_output_format_for_bus(nodePtr, C.int(bus))
+	if result.error != nil {
+		return nil, errors.New(C.GoString(result.error))
+	}
+	return unsafe.Pointer(result.result), nil
 }
 
 // GetNumberOfInputs returns the number of input buses on the node
-func GetNumberOfInputs(nodePtr unsafe.Pointer) int {
+func GetNumberOfInputs(nodePtr unsafe.Pointer) (int, error) {
 	if nodePtr == nil {
-		return 0
+		return 0, errors.New("node pointer is nil")
 	}
-	return int(C.audionode_number_of_inputs(nodePtr))
+	
+	var result C.int
+	errorStr := C.audionode_get_number_of_inputs(nodePtr, &result)
+	if errorStr != nil {
+		return 0, errors.New(C.GoString(errorStr))
+	}
+	return int(result), nil
 }
 
 // GetNumberOfOutputs returns the number of output buses on the node
-func GetNumberOfOutputs(nodePtr unsafe.Pointer) int {
+func GetNumberOfOutputs(nodePtr unsafe.Pointer) (int, error) {
 	if nodePtr == nil {
-		return 0
+		return 0, errors.New("node pointer is nil")
 	}
-	return int(C.audionode_number_of_outputs(nodePtr))
+	
+	var result C.int
+	errorStr := C.audionode_get_number_of_outputs(nodePtr, &result)
+	if errorStr != nil {
+		return 0, errors.New(C.GoString(errorStr))
+	}
+	return int(result), nil
 }
 
 // IsInstalledOnEngine returns true if the node is currently installed on an AVAudioEngine
-func IsInstalledOnEngine(nodePtr unsafe.Pointer) bool {
+func IsInstalledOnEngine(nodePtr unsafe.Pointer) (bool, error) {
 	if nodePtr == nil {
-		return false
+		return false, errors.New("node pointer is nil")
 	}
-	return bool(C.audionode_is_installed_on_engine(nodePtr))
+	
+	var result C.bool
+	errorStr := C.audionode_is_installed_on_engine(nodePtr, &result)
+	if errorStr != nil {
+		return false, errors.New(C.GoString(errorStr))
+	}
+	return bool(result), nil
 }
 
 // LogInfo logs detailed information about the node for debugging
-func LogInfo(nodePtr unsafe.Pointer) {
-	if nodePtr == nil {
-		return
-	}
-	C.audionode_log_info(nodePtr)
-}
-
-// ValidateBus checks if a bus number is valid for the given direction
-func ValidateInputBus(nodePtr unsafe.Pointer, bus int) error {
+func LogInfo(nodePtr unsafe.Pointer) error {
 	if nodePtr == nil {
 		return errors.New("node pointer is nil")
 	}
-
-	numInputs := GetNumberOfInputs(nodePtr)
-	if bus < 0 || bus >= numInputs {
-		return errors.New("invalid input bus: node has " + string(rune(numInputs)) + " inputs, requested bus " + string(rune(bus)))
+	
+	errorStr := C.audionode_log_info(nodePtr)
+	if errorStr != nil {
+		return errors.New(C.GoString(errorStr))
 	}
-
 	return nil
 }
 
-// ValidateOutputBus checks if an output bus number is valid
-func ValidateOutputBus(nodePtr unsafe.Pointer, bus int) error {
-	if nodePtr == nil {
-		return errors.New("node pointer is nil")
-	}
-
-	numOutputs := GetNumberOfOutputs(nodePtr)
-	if bus < 0 || bus >= numOutputs {
-		return errors.New("invalid output bus: node has " + string(rune(numOutputs)) + " outputs, requested bus " + string(rune(bus)))
-	}
-
-	return nil
-}
-
-// AVAudioMixerNode functions
+// AVAudioMixerNode Functions
 
 // CreateMixer creates a new AVAudioMixerNode
-// Returns a pointer to the created mixer node or nil on failure
-func CreateMixer() unsafe.Pointer {
-	return unsafe.Pointer(C.audiomixer_create())
+func CreateMixer() (unsafe.Pointer, error) {
+	result := C.audiomixer_create()
+	if result.error != nil {
+		return nil, errors.New(C.GoString(result.error))
+	}
+	return unsafe.Pointer(result.result), nil
 }
 
 // ReleaseMixer releases the memory for an AVAudioMixerNode
-func ReleaseMixer(mixerPtr unsafe.Pointer) {
+func ReleaseMixer(mixerPtr unsafe.Pointer) error {
 	if mixerPtr == nil {
-		return
+		return errors.New("mixer pointer is nil")
 	}
-	C.audiomixer_release(mixerPtr)
+	
+	errorStr := C.audiomixer_release(mixerPtr)
+	if errorStr != nil {
+		return errors.New(C.GoString(errorStr))
+	}
+	return nil
 }
 
 // SetMixerVolume sets the volume for the mixer on the specified input bus
@@ -302,15 +143,10 @@ func SetMixerVolume(mixerPtr unsafe.Pointer, volume float32, inputBus int) error
 		return errors.New("mixer pointer is nil")
 	}
 
-	if volume < 0.0 || volume > 1.0 {
-		return errors.New("volume must be between 0.0 and 1.0")
+	errorStr := C.audiomixer_set_volume(mixerPtr, C.float(volume), C.int(inputBus))
+	if errorStr != nil {
+		return errors.New(C.GoString(errorStr))
 	}
-
-	success := bool(C.audiomixer_set_volume(mixerPtr, C.float(volume), C.int(inputBus)))
-	if !success {
-		return errors.New("failed to set mixer volume")
-	}
-
 	return nil
 }
 
@@ -321,15 +157,10 @@ func SetMixerPan(mixerPtr unsafe.Pointer, pan float32, inputBus int) error {
 		return errors.New("mixer pointer is nil")
 	}
 
-	if pan < -1.0 || pan > 1.0 {
-		return errors.New("pan must be between -1.0 and 1.0")
+	errorStr := C.audiomixer_set_pan(mixerPtr, C.float(pan), C.int(inputBus))
+	if errorStr != nil {
+		return errors.New(C.GoString(errorStr))
 	}
-
-	success := bool(C.audiomixer_set_pan(mixerPtr, C.float(pan), C.int(inputBus)))
-	if !success {
-		return errors.New("failed to set mixer pan")
-	}
-
 	return nil
 }
 
@@ -339,8 +170,12 @@ func GetMixerVolume(mixerPtr unsafe.Pointer, inputBus int) (float32, error) {
 		return 0.0, errors.New("mixer pointer is nil")
 	}
 
-	volume := float32(C.audiomixer_get_volume(mixerPtr, C.int(inputBus)))
-	return volume, nil
+	var result C.float
+	errorStr := C.audiomixer_get_volume(mixerPtr, C.int(inputBus), &result)
+	if errorStr != nil {
+		return 0.0, errors.New(C.GoString(errorStr))
+	}
+	return float32(result), nil
 }
 
 // GetMixerPan gets the current pan for the mixer on the specified input bus
@@ -349,6 +184,40 @@ func GetMixerPan(mixerPtr unsafe.Pointer, inputBus int) (float32, error) {
 		return 0.0, errors.New("mixer pointer is nil")
 	}
 
-	pan := float32(C.audiomixer_get_pan(mixerPtr, C.int(inputBus)))
-	return pan, nil
+	var result C.float
+	errorStr := C.audiomixer_get_pan(mixerPtr, C.int(inputBus), &result)
+	if errorStr != nil {
+		return 0.0, errors.New(C.GoString(errorStr))
+	}
+	return float32(result), nil
+}
+
+// Legacy helper functions for backward compatibility (these now return errors properly)
+
+// ValidateInputBus checks if a bus number is valid for input
+func ValidateInputBus(nodePtr unsafe.Pointer, bus int) error {
+	numInputs, err := GetNumberOfInputs(nodePtr)
+	if err != nil {
+		return err
+	}
+
+	if bus < 0 || bus >= numInputs {
+		return errors.New("invalid input bus: node has " + string(rune(numInputs+'0')) + " inputs, requested bus " + string(rune(bus+'0')))
+	}
+
+	return nil
+}
+
+// ValidateOutputBus checks if an output bus number is valid
+func ValidateOutputBus(nodePtr unsafe.Pointer, bus int) error {
+	numOutputs, err := GetNumberOfOutputs(nodePtr)
+	if err != nil {
+		return err
+	}
+
+	if bus < 0 || bus >= numOutputs {
+		return errors.New("invalid output bus: node has " + string(rune(numOutputs+'0')) + " outputs, requested bus " + string(rune(bus+'0')))
+	}
+
+	return nil
 }

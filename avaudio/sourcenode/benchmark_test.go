@@ -6,9 +6,9 @@ import (
 
 const (
 	// Audio buffer sizes for testing - realistic audio callback sizes
-	SmallBuffer  = 256   // ~5.8ms at 44.1kHz
-	NormalBuffer = 1024  // ~23.2ms at 44.1kHz  
-	LargeBuffer  = 4096  // ~92.9ms at 44.1kHz
+	SmallBuffer  = 256  // ~5.8ms at 44.1kHz
+	NormalBuffer = 1024 // ~23.2ms at 44.1kHz
+	LargeBuffer  = 4096 // ~92.9ms at 44.1kHz
 )
 
 // ============================================================================
@@ -33,15 +33,24 @@ func benchmarkSineGeneration(b *testing.B, frameCount int) {
 		b.Fatalf("Failed to create source node: %v", err)
 	}
 	defer sourceNode.Destroy()
-	
-	sourceNode.SetFrequency(440.0)
-	sourceNode.SetAmplitude(0.5)
-	
+
+	err = sourceNode.SetFrequency(440.0)
+	if err != nil {
+		b.Fatalf("Failed to set frequency: %v", err)
+	}
+	err = sourceNode.SetAmplitude(0.5)
+	if err != nil {
+		b.Fatalf("Failed to set amplitude: %v", err)
+	}
+
 	b.ResetTimer()
 	b.ReportAllocs()
-	
+
 	for i := 0; i < b.N; i++ {
-		buffer := sourceNode.GenerateBuffer(frameCount)
+		buffer, err := sourceNode.GenerateBuffer(frameCount)
+		if err != nil {
+			b.Fatalf("Failed to generate buffer: %v", err)
+		}
 		_ = buffer // Prevent optimization
 	}
 }
@@ -61,13 +70,16 @@ func BenchmarkCGOCallOverhead(b *testing.B) {
 		b.Fatalf("Failed to create source node: %v", err)
 	}
 	defer sourceNode.Destroy()
-	
+
 	b.ResetTimer()
 	b.ReportAllocs()
-	
+
 	for i := 0; i < b.N; i++ {
 		// Just call the C function with minimal work
-		sourceNode.SetFrequency(440.0)
+		err := sourceNode.SetFrequency(440.0)
+		if err != nil {
+			b.Fatalf("Failed to set frequency: %v", err)
+		}
 	}
 }
 
@@ -75,7 +87,7 @@ func BenchmarkCGOCallOverhead(b *testing.B) {
 func BenchmarkMemoryAllocation(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
-	
+
 	for i := 0; i < b.N; i++ {
 		buffer := make([]float32, NormalBuffer)
 		_ = buffer
@@ -97,20 +109,29 @@ func TestToneGeneration(t *testing.T) {
 		t.Fatalf("Failed to create tone source node: %v", err)
 	}
 	defer toneNode.Destroy()
-	
+
 	// Set parameters
 	freq, amp := 440.0, 0.5
-	toneNode.SetFrequency(freq)
-	toneNode.SetAmplitude(amp)
-	
+	err = toneNode.SetFrequency(freq)
+	if err != nil {
+		t.Fatalf("Failed to set frequency: %v", err)
+	}
+	err = toneNode.SetAmplitude(amp)
+	if err != nil {
+		t.Fatalf("Failed to set amplitude: %v", err)
+	}
+
 	// Generate buffer
 	frameCount := 100
-	buffer := toneNode.GenerateBuffer(frameCount)
-	
+	buffer, err := toneNode.GenerateBuffer(frameCount)
+	if err != nil {
+		t.Fatalf("Failed to generate buffer: %v", err)
+	}
+
 	if len(buffer) != frameCount {
 		t.Fatalf("Buffer length mismatch: expected=%d, got=%d", frameCount, len(buffer))
 	}
-	
+
 	// Check that we're not generating silence
 	hasNonZero := false
 	for _, sample := range buffer {
@@ -119,11 +140,11 @@ func TestToneGeneration(t *testing.T) {
 			break
 		}
 	}
-	
+
 	if !hasNonZero {
 		t.Error("Tone generation produced only silence")
 	}
-	
+
 	// Check amplitude bounds
 	for i, sample := range buffer {
 		if sample < -1.0 || sample > 1.0 {
@@ -137,20 +158,29 @@ func TestToneGeneration(t *testing.T) {
 func BenchmarkRealtimeConstraints(b *testing.B) {
 	// Simulate realistic audio callback: 1024 samples at 44.1kHz = ~23ms budget
 	frameCount := 1024
-	
+
 	sourceNode, err := NewTone()
 	if err != nil {
 		b.Fatalf("Failed to create source node: %v", err)
 	}
 	defer sourceNode.Destroy()
-	
-	sourceNode.SetFrequency(440.0)
-	sourceNode.SetAmplitude(0.5)
-	
+
+	err = sourceNode.SetFrequency(440.0)
+	if err != nil {
+		b.Fatalf("Failed to set frequency: %v", err)
+	}
+	err = sourceNode.SetAmplitude(0.5)
+	if err != nil {
+		b.Fatalf("Failed to set amplitude: %v", err)
+	}
+
 	b.ResetTimer()
-	
+
 	for i := 0; i < b.N; i++ {
-		buffer := sourceNode.GenerateBuffer(frameCount)
+		buffer, err := sourceNode.GenerateBuffer(frameCount)
+		if err != nil {
+			b.Fatalf("Failed to generate buffer: %v", err)
+		}
 		_ = buffer
 	}
 }

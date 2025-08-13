@@ -1,269 +1,29 @@
-// Package tap provides audio tap functionality for monitoring and testing audio signals
-// in AVAudioEngine. Taps allow non-intrusive monitoring of audio data flowing through nodes.
+// Package tap provides audio tap functionality for monitoring and testing audio signals.
+// It allows installing taps on AVAudioNode buses to capture audio metrics and data
+// for analysis, monitoring, and debugging purposes.
 package tap
 
 /*
 #cgo CFLAGS: -x objective-c -fobjc-arc
 #cgo LDFLAGS: -framework AVFoundation -framework AudioToolbox -framework Foundation
-#import <AVFoundation/AVFoundation.h>
-#import <AudioUnit/AudioUnit.h>
+#include "native/tap.m"
+#include <stdlib.h>
 
-// Tap callback info structure
-typedef struct {
-    void* tapPtr;      // Unique tap identifier
-    void* nodePtr;     // AVAudioNode being tapped
-    int busIndex;      // Bus index being tapped
-    bool isActive;     // Whether tap is currently active
-    double sampleRate; // Sample rate of the tapped audio
-    int channelCount;  // Number of channels being tapped
-} TapInfo;
-
-// Function declarations for CGO
-bool tap_install(void* enginePtr, void* nodePtr, int busIndex, void* tapIdentifier);
-bool tap_remove(void* enginePtr, void* nodePtr, int busIndex, void* tapIdentifier);
-bool tap_get_info(void* tapIdentifier, TapInfo* info);
-double tap_get_rms(void* tapIdentifier);
-int tap_get_frame_count(void* tapIdentifier);
-void tap_remove_all(void);
-int tap_get_active_count(void);
-void tap_init(void);
-
-// Global tap storage (simplified for this implementation)
-static NSMutableDictionary* activeTaps = nil;
-
-// Initialize tap storage
-void tap_init() {
-    if (!activeTaps) {
-        activeTaps = [[NSMutableDictionary alloc] init];
-    }
-}
-
-// Install a tap on an AVAudioNode at the specified bus
-bool tap_install(void* enginePtr, void* nodePtr, int busIndex, void* tapIdentifier) {
-    if (!enginePtr || !nodePtr || !tapIdentifier) {
-        NSLog(@"tap_install: Invalid parameters");
-        return false;
-    }
-
-    tap_init();
-
-    AVAudioEngine* engine = (__bridge AVAudioEngine*)enginePtr;
-    AVAudioNode* node = (__bridge AVAudioNode*)nodePtr;
-
-    @try {
-        // Check if node is attached to engine
-        if (![engine.attachedNodes containsObject:node]) {
-            NSLog(@"tap_install: Node is not attached to engine");
-            return false;
-        }
-
-        // Check bus validity
-        if (busIndex < 0 || busIndex >= node.numberOfOutputs) {
-            NSLog(@"tap_install: Invalid bus index %d for node with %d outputs",
-                  busIndex, (int)node.numberOfOutputs);
-            return false;
-        }
-
-        // Get the format for this bus
-        AVAudioFormat* format = [node outputFormatForBus:busIndex];
-        if (!format) {
-            NSLog(@"tap_install: No format available for bus %d", busIndex);
-            return false;
-        }
-
-        // Create tap info
-        NSString* tapKey = [NSString stringWithFormat:@"%p", tapIdentifier];
-
-        // Remove existing tap if present
-        [node removeTapOnBus:busIndex];
-
-        // Install the tap with a callback that stores audio data
-        [node installTapOnBus:busIndex bufferSize:1024 format:format block:^(AVAudioPCMBuffer * _Nonnull buffer, AVAudioTime * _Nonnull when) {
-            // Store tap information for retrieval
-            @synchronized(activeTaps) {
-                NSMutableDictionary* tapData = activeTaps[tapKey];
-                if (!tapData) {
-                    tapData = [[NSMutableDictionary alloc] init];
-                    activeTaps[tapKey] = tapData;
-                }
-
-                // Store latest buffer info (we'll keep this simple for now)
-                tapData[@"frameLength"] = @(buffer.frameLength);
-                tapData[@"frameCapacity"] = @(buffer.frameCapacity);
-                tapData[@"sampleRate"] = @(format.sampleRate);
-                tapData[@"channelCount"] = @(format.channelCount);
-                tapData[@"lastUpdateTime"] = @([[NSDate date] timeIntervalSince1970]);
-
-                // Calculate RMS for monitoring (simple implementation)
-                if (buffer.frameLength > 0 && buffer.floatChannelData) {
-                    float rms = 0.0f;
-                    float* channelData = buffer.floatChannelData[0]; // Use first channel
-                    for (UInt32 i = 0; i < buffer.frameLength; i++) {
-                        rms += channelData[i] * channelData[i];
-                    }
-                    rms = sqrt(rms / buffer.frameLength);
-                    tapData[@"rms"] = @(rms);
-                }
-            }
-        }];
-
-        // Store tap info
-        @synchronized(activeTaps) {
-            NSMutableDictionary* tapData = activeTaps[tapKey];
-            if (!tapData) {
-                tapData = [[NSMutableDictionary alloc] init];
-                activeTaps[tapKey] = tapData;
-            }
-
-            tapData[@"nodePtr"] = [NSValue valueWithPointer:nodePtr];
-            tapData[@"busIndex"] = @(busIndex);
-            tapData[@"isActive"] = @YES;
-            tapData[@"sampleRate"] = @(format.sampleRate);
-            tapData[@"channelCount"] = @(format.channelCount);
-        }
-
-        NSLog(@"tap_install: Successfully installed tap on bus %d (%.0f Hz, %d channels)",
-              busIndex, format.sampleRate, (int)format.channelCount);
-        return true;
-
-    } @catch (NSException* exception) {
-        NSLog(@"tap_install: Exception installing tap: %@", exception);
-        return false;
-    }
-}
-
-// Remove a tap from an AVAudioNode
-bool tap_remove(void* enginePtr, void* nodePtr, int busIndex, void* tapIdentifier) {
-    if (!nodePtr || !tapIdentifier) {
-        NSLog(@"tap_remove: Invalid parameters");
-        return false;
-    }
-
-    tap_init();
-
-    AVAudioNode* node = (__bridge AVAudioNode*)nodePtr;
-    NSString* tapKey = [NSString stringWithFormat:@"%p", tapIdentifier];
-
-    @try {
-        // Remove the tap
-        [node removeTapOnBus:busIndex];
-
-        // Remove from our storage
-        @synchronized(activeTaps) {
-            [activeTaps removeObjectForKey:tapKey];
-        }
-
-        NSLog(@"tap_remove: Successfully removed tap on bus %d", busIndex);
-        return true;
-
-    } @catch (NSException* exception) {
-        NSLog(@"tap_remove: Exception removing tap: %@", exception);
-        return false;
-    }
-}
-
-// Get tap information and metrics
-bool tap_get_info(void* tapIdentifier, TapInfo* info) {
-    if (!tapIdentifier || !info) {
-        NSLog(@"tap_get_info: Invalid parameters");
-        return false;
-    }
-
-    tap_init();
-
-    NSString* tapKey = [NSString stringWithFormat:@"%p", tapIdentifier];
-
-    @synchronized(activeTaps) {
-        NSMutableDictionary* tapData = activeTaps[tapKey];
-        if (!tapData) {
-            return false;
-        }
-
-        info->tapPtr = tapIdentifier;
-        info->nodePtr = [[tapData objectForKey:@"nodePtr"] pointerValue];
-        info->busIndex = [[tapData objectForKey:@"busIndex"] intValue];
-        info->isActive = [[tapData objectForKey:@"isActive"] boolValue];
-        info->sampleRate = [[tapData objectForKey:@"sampleRate"] doubleValue];
-        info->channelCount = [[tapData objectForKey:@"channelCount"] intValue];
-
-        return true;
-    }
-}
-
-// Get current RMS level from tap
-double tap_get_rms(void* tapIdentifier) {
-    if (!tapIdentifier) {
-        return -1.0;
-    }
-
-    tap_init();
-
-    NSString* tapKey = [NSString stringWithFormat:@"%p", tapIdentifier];
-
-    @synchronized(activeTaps) {
-        NSMutableDictionary* tapData = activeTaps[tapKey];
-        if (!tapData) {
-            return -1.0;
-        }
-
-        NSNumber* rms = tapData[@"rms"];
-        if (rms) {
-            return [rms doubleValue];
-        }
-    }
-
-    return 0.0;
-}
-
-// Get frame count from last buffer
-int tap_get_frame_count(void* tapIdentifier) {
-    if (!tapIdentifier) {
-        return -1;
-    }
-
-    tap_init();
-
-    NSString* tapKey = [NSString stringWithFormat:@"%p", tapIdentifier];
-
-    @synchronized(activeTaps) {
-        NSMutableDictionary* tapData = activeTaps[tapKey];
-        if (!tapData) {
-            return -1;
-        }
-
-        NSNumber* frameLength = tapData[@"frameLength"];
-        if (frameLength) {
-            return [frameLength intValue];
-        }
-    }
-
-    return 0;
-}
-
-// Remove all taps (cleanup)
-void tap_remove_all() {
-    tap_init();
-
-    @synchronized(activeTaps) {
-        // We can't easily remove all taps without keeping engine reference
-        // So we'll just clear our storage
-        [activeTaps removeAllObjects];
-        NSLog(@"tap_remove_all: Cleared tap storage");
-    }
-}
-
-// Get number of active taps
-int tap_get_active_count() {
-    tap_init();
-
-    @synchronized(activeTaps) {
-        return (int)[activeTaps count];
-    }
-}
+// Function declarations - now using string keys instead of void* pointers
+const char* tap_install(void* enginePtr, void* nodePtr, int busIndex, const char* tapKey);
+const char* tap_remove(const char* tapKey);
+const char* tap_get_info(const char* tapKey, TapInfo* info);
+const char* tap_get_rms(const char* tapKey, double* result);
+const char* tap_get_frame_count(const char* tapKey, int* result);
+const char* tap_remove_all(void);
+const char* tap_get_active_count(int* result);
 */
 import "C"
 import (
+	"errors"
 	"fmt"
+	"regexp"
+	"sync"
 	"time"
 	"unsafe"
 )
@@ -285,17 +45,30 @@ type TapMetrics struct {
 	LastUpdate time.Time // When metrics were last updated
 }
 
+// Global tap registry (Go side owns the bookkeeping)
+var (
+	tapRegistry = make(map[string]*Tap)
+	tapMutex    sync.RWMutex
+)
+
 // Tap represents an audio tap for monitoring signal flow
 type Tap struct {
-	id        unsafe.Pointer
-	enginePtr unsafe.Pointer
-	nodePtr   unsafe.Pointer
-	busIndex  int
-	installed bool
+	key       string         // Human-readable identifier like "test_output_bus0"
+	enginePtr unsafe.Pointer // AVAudioEngine pointer
+	nodePtr   unsafe.Pointer // AVAudioNode pointer
+	busIndex  int            // Bus index for the tap
+	installed bool           // Whether tap is currently installed
 }
 
-// InstallTap installs a tap on the specified AVAudioNode and bus
-func InstallTap(enginePtr, nodePtr unsafe.Pointer, busIndex int) (*Tap, error) {
+// isValidTapKey validates that a tap key contains only safe characters
+func isValidTapKey(key string) bool {
+	// Allow alphanumeric, underscore, hyphen
+	validPattern := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	return validPattern.MatchString(key)
+}
+
+// InstallTapWithKey installs a tap with a specific string key for identification
+func InstallTapWithKey(enginePtr, nodePtr unsafe.Pointer, busIndex int, key string) (*Tap, error) {
 	if enginePtr == nil {
 		return nil, fmt.Errorf("engine pointer cannot be nil")
 	}
@@ -305,23 +78,46 @@ func InstallTap(enginePtr, nodePtr unsafe.Pointer, busIndex int) (*Tap, error) {
 	if busIndex < 0 {
 		return nil, fmt.Errorf("bus index must be non-negative")
 	}
-
-	// Create unique tap identifier
-	tapID := unsafe.Pointer(uintptr(time.Now().UnixNano()))
-
-	// Install the tap
-	success := bool(C.tap_install(enginePtr, nodePtr, C.int(busIndex), tapID))
-	if !success {
-		return nil, fmt.Errorf("failed to install tap on bus %d", busIndex)
+	if key == "" || !isValidTapKey(key) {
+		return nil, fmt.Errorf("invalid tap key: must be non-empty alphanumeric with underscore/hyphen")
 	}
 
-	return &Tap{
-		id:        tapID,
+	tapMutex.Lock()
+	defer tapMutex.Unlock()
+
+	// STRICT: Check for key collision
+	if _, exists := tapRegistry[key]; exists {
+		return nil, fmt.Errorf("🚨 TAP KEY COLLISION: '%s' already exists - remove existing tap first", key)
+	}
+
+	tap := &Tap{
+		key:       key,
 		enginePtr: enginePtr,
 		nodePtr:   nodePtr,
 		busIndex:  busIndex,
-		installed: true,
-	}, nil
+		installed: false,
+	}
+
+	// Convert key to C string
+	cKey := C.CString(key)
+	defer C.free(unsafe.Pointer(cKey))
+
+	// Install the tap using string key
+	errorStr := C.tap_install(enginePtr, nodePtr, C.int(busIndex), cKey)
+	if errorStr != nil {
+		return nil, errors.New(C.GoString(errorStr))
+	}
+
+	tap.installed = true
+	tapRegistry[key] = tap
+	return tap, nil
+}
+
+// InstallTap installs a tap with an auto-generated key (for compatibility)
+func InstallTap(enginePtr, nodePtr unsafe.Pointer, busIndex int) (*Tap, error) {
+	// Generate a unique key based on pointers and timestamp
+	key := fmt.Sprintf("tap_node%p_bus%d_%d", nodePtr, busIndex, time.Now().UnixNano())
+	return InstallTapWithKey(enginePtr, nodePtr, busIndex, key)
 }
 
 // Remove removes the tap from the audio node
@@ -330,12 +126,20 @@ func (t *Tap) Remove() error {
 		return fmt.Errorf("tap is not installed")
 	}
 
-	success := bool(C.tap_remove(t.enginePtr, t.nodePtr, C.int(t.busIndex), t.id))
-	if !success {
-		return fmt.Errorf("failed to remove tap")
+	tapMutex.Lock()
+	defer tapMutex.Unlock()
+
+	// Convert key to C string
+	cKey := C.CString(t.key)
+	defer C.free(unsafe.Pointer(cKey))
+
+	errorStr := C.tap_remove(cKey)
+	if errorStr != nil {
+		return errors.New(C.GoString(errorStr))
 	}
 
 	t.installed = false
+	delete(tapRegistry, t.key)
 	return nil
 }
 
@@ -345,10 +149,14 @@ func (t *Tap) GetInfo() (*TapInfo, error) {
 		return nil, fmt.Errorf("tap is not installed")
 	}
 
+	// Convert key to C string
+	cKey := C.CString(t.key)
+	defer C.free(unsafe.Pointer(cKey))
+
 	var info C.TapInfo
-	success := bool(C.tap_get_info(t.id, &info))
-	if !success {
-		return nil, fmt.Errorf("failed to get tap info")
+	errorStr := C.tap_get_info(cKey, &info)
+	if errorStr != nil {
+		return nil, errors.New(C.GoString(errorStr))
 	}
 
 	return &TapInfo{
@@ -367,12 +175,25 @@ func (t *Tap) GetMetrics() (*TapMetrics, error) {
 		return nil, fmt.Errorf("tap is not installed")
 	}
 
-	rms := float64(C.tap_get_rms(t.id))
-	frameCount := int(C.tap_get_frame_count(t.id))
+	// Convert key to C string
+	cKey := C.CString(t.key)
+	defer C.free(unsafe.Pointer(cKey))
+
+	var rms C.double
+	errorStr := C.tap_get_rms(cKey, &rms)
+	if errorStr != nil {
+		return nil, errors.New(C.GoString(errorStr))
+	}
+
+	var frameCount C.int
+	errorStr = C.tap_get_frame_count(cKey, &frameCount)
+	if errorStr != nil {
+		return nil, errors.New(C.GoString(errorStr))
+	}
 
 	return &TapMetrics{
-		RMS:        rms,
-		FrameCount: frameCount,
+		RMS:        float64(rms),
+		FrameCount: int(frameCount),
 		LastUpdate: time.Now(),
 	}, nil
 }
@@ -418,13 +239,22 @@ func (t *Tap) WaitForActivity(timeout time.Duration, minRMS float64) (bool, erro
 // Package-level functions
 
 // RemoveAllTaps removes all active taps (useful for cleanup)
-func RemoveAllTaps() {
-	C.tap_remove_all()
+func RemoveAllTaps() error {
+	errorStr := C.tap_remove_all()
+	if errorStr != nil {
+		return errors.New(C.GoString(errorStr))
+	}
+	return nil
 }
 
 // GetActiveTapCount returns the number of currently active taps
-func GetActiveTapCount() int {
-	return int(C.tap_get_active_count())
+func GetActiveTapCount() (int, error) {
+	var result C.int
+	errorStr := C.tap_get_active_count(&result)
+	if errorStr != nil {
+		return 0, errors.New(C.GoString(errorStr))
+	}
+	return int(result), nil
 }
 
 // WaitForSignal is a utility function to wait for audio signal on any tap

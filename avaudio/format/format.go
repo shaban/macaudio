@@ -10,12 +10,13 @@ package format
 AudioFormatResult audioformat_new_mono(double sampleRate);
 AudioFormatResult audioformat_new_stereo(double sampleRate);
 AudioFormatResult audioformat_new_with_channels(double sampleRate, int channels, bool interleaved);
-AudioFormatResult audioformat_copy(AudioFormat* wrapper);
+AudioFormatResult audioformat_new_from_spec(double sampleRate, int channels, bool interleaved);
 AudioFormatResult audioformat_get_format(AudioFormat* wrapper);
 void audioformat_destroy(AudioFormat* wrapper);
 double audioformat_get_sample_rate(AudioFormat* wrapper);
 int audioformat_get_channel_count(AudioFormat* wrapper);
 bool audioformat_is_interleaved(AudioFormat* wrapper);
+const char* audioformat_is_equal(AudioFormat* wrapper1, AudioFormat* wrapper2, bool* result);
 void audioformat_log_info(AudioFormat* wrapper);
 */
 import "C"
@@ -23,6 +24,13 @@ import (
 	"errors"
 	"unsafe"
 )
+
+// AudioSpec defines audio format specifications
+type AudioSpec struct {
+	SampleRate   float64
+	ChannelCount int
+	Interleaved  bool
+}
 
 // Format represents a 1:1 mapping to AVAudioFormat
 // This is a pure primitive - no routing assumptions
@@ -65,13 +73,14 @@ func NewWithChannels(sampleRate float64, channels int, interleaved bool) (*Forma
 	return &Format{ptr: (*C.AudioFormat)(result.result)}, nil
 }
 
-// Copy creates a copy of the format
-func (f *Format) Copy() (*Format, error) {
-	if f == nil || f.ptr == nil {
-		return nil, errors.New("format is nil")
+// NewFromSpec creates a format from explicit specifications
+func NewFromSpec(spec AudioSpec) (*Format, error) {
+	cInterleaved := C.bool(false)
+	if spec.Interleaved {
+		cInterleaved = C.bool(true)
 	}
 
-	result := C.audioformat_copy(f.ptr)
+	result := C.audioformat_new_from_spec(C.double(spec.SampleRate), C.int(spec.ChannelCount), cInterleaved)
 	if result.error != nil {
 		return nil, errors.New(C.GoString(result.error))
 	}
@@ -123,9 +132,26 @@ func (f *Format) IsEqual(other *Format) bool {
 		return false
 	}
 
-	// For now, just return false until we fix the signature issue
-	// TODO: Fix audioformat_is_equal signature mismatch
-	return false
+	var result C.bool
+	errStr := C.audioformat_is_equal(f.ptr, other.ptr, &result)
+	if errStr != nil {
+		return false
+	}
+
+	return bool(result)
+}
+
+// ToSpec extracts specifications from an existing format
+func (f *Format) ToSpec() AudioSpec {
+	if f == nil || f.ptr == nil {
+		return AudioSpec{}
+	}
+
+	return AudioSpec{
+		SampleRate:   f.SampleRate(),
+		ChannelCount: f.ChannelCount(),
+		Interleaved:  f.IsInterleaved(),
+	}
 }
 
 // LogInfo logs detailed format information for debugging

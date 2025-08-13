@@ -3,80 +3,18 @@ package unit
 /*
 #cgo CFLAGS: -x objective-c -fobjc-arc
 #cgo LDFLAGS: -framework AVFoundation -framework AudioToolbox -framework Foundation
-#import <AVFoundation/AVFoundation.h>
-#import <AudioUnit/AudioUnit.h>
+#include "native/unit.m"
+#include <stdlib.h>
 
-// AVAudioUnitEffect creation from plugin info
-void* create_unit_effect(uint32_t type, uint32_t subtype, uint32_t manufacturer) {
-    AudioComponentDescription desc = {
-        .componentType = type,
-        .componentSubType = subtype,
-        .componentManufacturer = manufacturer,
-        .componentFlags = 0,
-        .componentFlagsMask = 0
-    };
-
-    AVAudioUnitEffect* effect = [[AVAudioUnitEffect alloc] initWithAudioComponentDescription:desc];
-
-    if (!effect) {
-        NSLog(@"Failed to create AVAudioUnitEffect");
-        return NULL;
-    }
-
-    NSLog(@"Created AVAudioUnitEffect: %@", effect);
-    return (__bridge_retained void*)effect;
-}
-
-// Release effect
-void release_unit_effect(void* effectPtr) {
-    if (!effectPtr) return;
-    CFBridgingRelease(effectPtr);
-}
-
-// Set parameter using address from plugins package
-bool set_effect_parameter(void* effectPtr, uint64_t address, float value) {
-    if (!effectPtr) return false;
-
-    AVAudioUnitEffect* effect = (__bridge AVAudioUnitEffect*)effectPtr;
-
-    @try {
-        AudioUnit audioUnit = effect.audioUnit;
-        if (audioUnit == NULL) return false;
-
-        // Use the address from plugins.Parameter.Address
-        OSStatus status = AudioUnitSetParameter(audioUnit, (AudioUnitParameterID)address,
-                                              kAudioUnitScope_Global, 0, value, 0);
-        return status == noErr;
-    }
-    @catch (NSException* exception) {
-        NSLog(@"Exception setting parameter: %@", exception);
-        return false;
-    }
-}
-
-// Get parameter using address from plugins package
-float get_effect_parameter(void* effectPtr, uint64_t address) {
-    if (!effectPtr) return 0.0f;
-
-    AVAudioUnitEffect* effect = (__bridge AVAudioUnitEffect*)effectPtr;
-
-    @try {
-        AudioUnit audioUnit = effect.audioUnit;
-        if (audioUnit == NULL) return 0.0f;
-
-        AudioUnitParameterValue value = 0.0f;
-        OSStatus status = AudioUnitGetParameter(audioUnit, (AudioUnitParameterID)address,
-                                              kAudioUnitScope_Global, 0, &value);
-        return status == noErr ? value : 0.0f;
-    }
-    @catch (NSException* exception) {
-        NSLog(@"Exception getting parameter: %@", exception);
-        return 0.0f;
-    }
-}
+// Function declarations - CGO resolves UnitResult from .m file
+UnitResult create_unit_effect(uint32_t type, uint32_t subtype, uint32_t manufacturer);
+const char* release_unit_effect(void* effectPtr);
+const char* set_effect_parameter(void* effectPtr, uint64_t address, float value);
+UnitResult get_effect_parameter(void* effectPtr, uint64_t address);
 */
 import "C"
 import (
+	"errors"
 	"fmt"
 	"unsafe"
 
@@ -86,33 +24,40 @@ import (
 // Effect represents an AVAudioUnitEffect instance
 type Effect struct {
 	ptr    unsafe.Pointer
-	plugin plugins.Plugin // Store plugin metadata for parameter access
+	plugin *plugins.Plugin // Store plugin metadata for parameter access
 }
 
 // CreateEffect creates an AVAudioUnitEffect from a plugins.Plugin
-func CreateEffect(plugin plugins.Plugin) (*Effect, error) {
+func CreateEffect(plugin *plugins.Plugin) (*Effect, error) {
 	// Convert string IDs to OSTypes
 	typeID := stringToOSType(plugin.Type)
 	subtypeID := stringToOSType(plugin.Subtype)
 	manufacturerID := stringToOSType(plugin.ManufacturerID)
 
-	ptr := C.create_unit_effect(C.uint32_t(typeID), C.uint32_t(subtypeID), C.uint32_t(manufacturerID))
-	if ptr == nil {
+	result := C.create_unit_effect(C.uint32_t(typeID), C.uint32_t(subtypeID), C.uint32_t(manufacturerID))
+	if result.error != nil {
+		return nil, errors.New(C.GoString(result.error))
+	}
+	if result.result == nil {
 		return nil, fmt.Errorf("failed to create effect: %s by %s", plugin.Name, plugin.ManufacturerID)
 	}
 
 	return &Effect{
-		ptr:    ptr,
+		ptr:    unsafe.Pointer(result.result),
 		plugin: plugin,
 	}, nil
 }
 
 // Release frees the effect resources
-func (e *Effect) Release() {
+func (e *Effect) Release() error {
 	if e.ptr != nil {
-		C.release_unit_effect(e.ptr)
+		errorStr := C.release_unit_effect(e.ptr)
 		e.ptr = nil
+		if errorStr != nil {
+			return errors.New(C.GoString(errorStr))
+		}
 	}
+	return nil
 }
 
 // SetParameter sets a parameter value using the parameter from plugins introspection
@@ -121,11 +66,10 @@ func (e *Effect) SetParameter(param plugins.Parameter, value float32) error {
 		return fmt.Errorf("effect has been released")
 	}
 
-	success := bool(C.set_effect_parameter(e.ptr, C.uint64_t(param.Address), C.float(value)))
-	if !success {
-		return fmt.Errorf("failed to set parameter %s (address: %d) to %.3f", param.DisplayName, param.Address, value)
+	errorStr := C.set_effect_parameter(e.ptr, C.uint64_t(param.Address), C.float(value))
+	if errorStr != nil {
+		return errors.New(C.GoString(errorStr))
 	}
-
 	return nil
 }
 
@@ -135,12 +79,21 @@ func (e *Effect) GetParameter(param plugins.Parameter) (float32, error) {
 		return 0, fmt.Errorf("effect has been released")
 	}
 
-	value := float32(C.get_effect_parameter(e.ptr, C.uint64_t(param.Address)))
+	result := C.get_effect_parameter(e.ptr, C.uint64_t(param.Address))
+	if result.error != nil {
+		return 0, errors.New(C.GoString(result.error))
+	}
+
+	// The result contains a float* that we need to dereference and free
+	valuePtr := (*C.float)(result.result)
+	value := float32(*valuePtr)
+	C.free(result.result) // Free the malloc'd memory from native code
+
 	return value, nil
 }
 
 // GetPlugin returns the plugin metadata for this effect
-func (e *Effect) GetPlugin() plugins.Plugin {
+func (e *Effect) GetPlugin() *plugins.Plugin {
 	return e.plugin
 }
 

@@ -117,7 +117,10 @@ func TestMasterConnectionWithRealAudio(t *testing.T) {
 	}
 	defer toneNode.Destroy()
 
-	toneNodePtr := toneNode.GetNodePtr()
+	toneNodePtr, err := toneNode.GetNodePtr()
+	if err != nil {
+		t.Fatalf("Failed to get tone node pointer: %v", err)
+	}
 	if toneNodePtr == nil {
 		t.Fatal("Tone node pointer is nil")
 	}

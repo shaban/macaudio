@@ -2,74 +2,17 @@ package pluginchain
 
 /*
 #cgo CFLAGS: -x objective-c -fobjc-arc
-#cgo LDFLAGS: -framework AVFoundation -framework AudioToolbox -framework Foundation
-#import <AVFoundation/AVFoundation.h>
-#import <AudioUnit/AudioUnit.h>
+#cgo LDFLAGS: -framework AVFoundation -framework AudioUnit -framework Foundation
+#include "native/pluginchain.m"
+#include <stdlib.h>
 
-// Connect effects in series using AVAudioEngine
-bool connect_effects(void* enginePtr, void** effectPtrs, int effectCount) {
-    if (!enginePtr || !effectPtrs || effectCount <= 0) return false;
-
-    AVAudioEngine* engine = (__bridge AVAudioEngine*)enginePtr;
-
-    @try {
-        // First, disconnect all effects that are currently attached to prevent conflicts
-        for (int i = 0; i < effectCount; i++) {
-            AVAudioNode* effect = (__bridge AVAudioNode*)effectPtrs[i];
-            if (!effect) {
-                NSLog(@"Invalid effect at index %d", i);
-                return false;
-            }
-
-            // Disconnect the node if it's already connected
-            if ([engine.attachedNodes containsObject:effect]) {
-                [engine disconnectNodeInput:effect bus:0];
-                [engine disconnectNodeOutput:effect bus:0];
-            }
-        }
-
-        // Then, attach all effects to the engine if not already attached
-        for (int i = 0; i < effectCount; i++) {
-            AVAudioNode* effect = (__bridge AVAudioNode*)effectPtrs[i];
-
-            // Check if already attached to avoid duplicate attachment
-            if (![engine.attachedNodes containsObject:effect]) {
-                [engine attachNode:effect];
-            }
-        }
-
-        // Finally, connect effects in series: effect[0] -> effect[1] -> ... -> effect[n-1]
-        for (int i = 0; i < effectCount - 1; i++) {
-            AVAudioNode* sourceEffect = (__bridge AVAudioNode*)effectPtrs[i];
-            AVAudioNode* destinationEffect = (__bridge AVAudioNode*)effectPtrs[i + 1];
-
-            if (!sourceEffect || !destinationEffect) {
-                NSLog(@"Invalid effect at index %d or %d", i, i + 1);
-                return false;
-            }
-
-            // Connect source to destination
-            [engine connect:sourceEffect to:destinationEffect format:nil];
-        }
-
-        return true;
-    }
-    @catch (NSException* exception) {
-        NSLog(@"Exception connecting effects: %@", exception);
-        return false;
-    }
-}
-
-// Get the last effect's audio node for external routing
-void* get_effect_audio_node(void* effectPtr) {
-    if (!effectPtr) return NULL;
-
-    // Effects are already AVAudioNode instances, so we just return the pointer
-    return effectPtr;
-}
+// Function declarations - CGO resolves PluginChainResult from .m file
+const char* connect_effects(void* enginePtr, void** effectPtrs, int effectCount);
+PluginChainResult get_effect_audio_node(void* effectPtr);
 */
 import "C"
 import (
+	"errors"
 	"fmt"
 	"unsafe"
 
@@ -81,7 +24,7 @@ import (
 type PluginChain struct {
 	name      string
 	effects   []*unit.Effect
-	plugins   []plugins.Plugin
+	plugins   []*plugins.Plugin
 	enginePtr unsafe.Pointer // Reference to AVAudioEngine for connections
 }
 
@@ -96,13 +39,13 @@ func NewPluginChain(config ChainConfig) *PluginChain {
 	return &PluginChain{
 		name:      config.Name,
 		effects:   make([]*unit.Effect, 0),
-		plugins:   make([]plugins.Plugin, 0),
+		plugins:   make([]*plugins.Plugin, 0),
 		enginePtr: config.EnginePtr,
 	}
 }
 
 // AddEffect adds an effect to the end of the chain using plugin discovery
-func (pc *PluginChain) AddEffect(plugin plugins.Plugin) error {
+func (pc *PluginChain) AddEffect(plugin *plugins.Plugin) error {
 	if pc.enginePtr == nil {
 		return fmt.Errorf("chain %s has no engine reference", pc.name)
 	}
@@ -133,7 +76,7 @@ func (pc *PluginChain) AddEffectFromPluginInfo(pluginInfo plugins.PluginInfo) er
 }
 
 // InsertEffect inserts an effect at the specified index
-func (pc *PluginChain) InsertEffect(index int, plugin plugins.Plugin) error {
+func (pc *PluginChain) InsertEffect(index int, plugin *plugins.Plugin) error {
 	if index < 0 || index > len(pc.effects) {
 		return fmt.Errorf("invalid index %d for chain of length %d", index, len(pc.effects))
 	}
@@ -150,7 +93,7 @@ func (pc *PluginChain) InsertEffect(index int, plugin plugins.Plugin) error {
 
 	// Insert into slices at the specified index
 	pc.effects = append(pc.effects[:index], append([]*unit.Effect{effect}, pc.effects[index:]...)...)
-	pc.plugins = append(pc.plugins[:index], append([]plugins.Plugin{plugin}, pc.plugins[index:]...)...)
+	pc.plugins = append(pc.plugins[:index], append([]*plugins.Plugin{plugin}, pc.plugins[index:]...)...)
 
 	// Update native connections
 	return pc.updateConnections()
@@ -204,7 +147,7 @@ func (pc *PluginChain) MoveEffect(fromIndex, toIndex int) error {
 
 	// Insert at calculated position
 	pc.effects = append(pc.effects[:insertIndex], append([]*unit.Effect{effect}, pc.effects[insertIndex:]...)...)
-	pc.plugins = append(pc.plugins[:insertIndex], append([]plugins.Plugin{plugin}, pc.plugins[insertIndex:]...)...)
+	pc.plugins = append(pc.plugins[:insertIndex], append([]*plugins.Plugin{plugin}, pc.plugins[insertIndex:]...)...)
 
 	// Update native connections
 	return pc.updateConnections()
@@ -236,7 +179,22 @@ func (pc *PluginChain) SetParameter(effectIndex int, param plugins.Parameter, va
 		return fmt.Errorf("invalid effect index %d for chain of length %d", effectIndex, len(pc.effects))
 	}
 
-	return pc.effects[effectIndex].SetParameter(param, value)
+	// Update the actual audio unit (source of truth)
+	err := pc.effects[effectIndex].SetParameter(param, value)
+	if err != nil {
+		return err
+	}
+
+	// Sync the plugin's parameter CurrentValue (because it's a pointer, this updates everywhere!)
+	plugin := pc.plugins[effectIndex]
+	for i := range plugin.Parameters {
+		if plugin.Parameters[i].Address == param.Address {
+			plugin.Parameters[i].CurrentValue = value
+			break
+		}
+	}
+
+	return nil
 }
 
 // GetParameter gets a parameter value from a specific effect in the chain
@@ -245,7 +203,22 @@ func (pc *PluginChain) GetParameter(effectIndex int, param plugins.Parameter) (f
 		return 0, fmt.Errorf("invalid effect index %d for chain of length %d", effectIndex, len(pc.effects))
 	}
 
-	return pc.effects[effectIndex].GetParameter(param)
+	// Get the actual value from the audio unit (source of truth)
+	value, err := pc.effects[effectIndex].GetParameter(param)
+	if err != nil {
+		return 0, err
+	}
+
+	// Sync the plugin's parameter CurrentValue for consistency
+	plugin := pc.plugins[effectIndex]
+	for i := range plugin.Parameters {
+		if plugin.Parameters[i].Address == param.Address {
+			plugin.Parameters[i].CurrentValue = value
+			break
+		}
+	}
+
+	return value, nil
 }
 
 // updateConnections updates the native AVAudioEngine connections for the chain
@@ -264,29 +237,43 @@ func (pc *PluginChain) updateConnections() error {
 		effectPtrs[i] = effect.Ptr()
 	}
 
-	// Use native function to connect effects in series
-	success := bool(C.connect_effects(pc.enginePtr, &effectPtrs[0], C.int(len(effectPtrs))))
-	if !success {
-		return fmt.Errorf("failed to update native connections for chain %s", pc.name)
-	}
+	// Convert Go slice to C array - need to pass void** to C
+	errorStr := C.connect_effects(
+		pc.enginePtr,
+		(*unsafe.Pointer)(unsafe.Pointer(&effectPtrs[0])),
+		C.int(len(effectPtrs)),
+	)
 
+	if errorStr != nil {
+		return errors.New(C.GoString(errorStr))
+	}
 	return nil
 }
 
 // GetInputNode returns the first effect in the chain for external routing
-func (pc *PluginChain) GetInputNode() unsafe.Pointer {
+func (pc *PluginChain) GetInputNode() (unsafe.Pointer, error) {
 	if len(pc.effects) == 0 {
-		return nil
+		return nil, errors.New("chain is empty")
 	}
-	return C.get_effect_audio_node(pc.effects[0].Ptr())
+
+	result := C.get_effect_audio_node(pc.effects[0].Ptr())
+	if result.error != nil {
+		return nil, errors.New(C.GoString(result.error))
+	}
+	return unsafe.Pointer(result.result), nil
 }
 
 // GetOutputNode returns the last effect in the chain for external routing
-func (pc *PluginChain) GetOutputNode() unsafe.Pointer {
+func (pc *PluginChain) GetOutputNode() (unsafe.Pointer, error) {
 	if len(pc.effects) == 0 {
-		return nil
+		return nil, errors.New("chain is empty")
 	}
-	return C.get_effect_audio_node(pc.effects[len(pc.effects)-1].Ptr())
+
+	result := C.get_effect_audio_node(pc.effects[len(pc.effects)-1].Ptr())
+	if result.error != nil {
+		return nil, errors.New(C.GoString(result.error))
+	}
+	return unsafe.Pointer(result.result), nil
 }
 
 // GetEffectCount returns the number of effects in the chain
@@ -295,9 +282,9 @@ func (pc *PluginChain) GetEffectCount() int {
 }
 
 // GetEffectAt returns the effect and plugin at the specified index
-func (pc *PluginChain) GetEffectAt(index int) (*unit.Effect, plugins.Plugin, error) {
+func (pc *PluginChain) GetEffectAt(index int) (*unit.Effect, *plugins.Plugin, error) {
 	if index < 0 || index >= len(pc.effects) {
-		return nil, plugins.Plugin{}, fmt.Errorf("invalid index %d for chain of length %d", index, len(pc.effects))
+		return nil, nil, fmt.Errorf("invalid index %d for chain of length %d", index, len(pc.effects))
 	}
 	return pc.effects[index], pc.plugins[index], nil
 }
