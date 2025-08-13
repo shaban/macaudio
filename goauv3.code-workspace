@@ -27,6 +27,9 @@
             "**/.git/subtree-cache/**": true,
             "**/node_modules/**": true,
             "**/.vscode/**": true
+        },
+        "files.associations": {
+            "*.m": "cpp"
         }
     },
     "extensions": {

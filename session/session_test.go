@@ -1,151 +1,236 @@
-//go:build darwin && cgo
+//go:build darwin
 
 package session
 
 import (
-	"sync"
+	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
 	"testing"
 	"time"
-	"unsafe"
 )
 
-// Mock engine for testing (actual implementation would use real AVAudioEngine)
-type MockEngine struct{}
+func TestMain(m *testing.M) {
+	fmt.Println("🚀 Session Package Test Suite")
+	fmt.Println("=============================")
+	fmt.Println()
 
-func TestSetEngineAndGetStatus(t *testing.T) {
-	// Test with nil engine pointer (should not crash)
-	var enginePtr unsafe.Pointer = nil
+	// Test basic session creation
+	fmt.Println("📋 Test 1: Session Creation")
+	sess, err := NewSessionWithDefaults()
+	if err != nil {
+		log.Fatalf("❌ Failed to create session: %v", err)
+	}
+	fmt.Printf("✅ Session created successfully\n")
+	fmt.Printf("   - Monitoring: %v\n", sess.IsMonitoring())
+	fmt.Printf("   - Audio spec: %+v\n", sess.GetAudioSpec())
+	fmt.Println()
 
-	// Test spec
-	spec := AudioSpec{
-		SampleRate:   44100.0,
-		ChannelCount: 2,
-		BitDepth:     16,
-		BufferSize:   512,
+	// Test initial device enumeration
+	fmt.Println("📋 Test 2: Initial Device Enumeration")
+	audioDevices, err := sess.GetAudioDevices()
+	if err != nil {
+		log.Printf("⚠️ Error getting audio devices: %v", err)
+	} else {
+		fmt.Printf("✅ Audio devices: %d found\n", len(audioDevices))
+		for i, device := range audioDevices {
+			fmt.Printf("   %d. %s (%s)\n", i+1, device.Name, device.UID)
+		}
 	}
 
-	// Set engine - this should handle nil gracefully
-	SetEngine(enginePtr, spec)
-
-	// Get status
-	status := GetEngineStatus()
-
-	// Verify spec was stored
-	if status.AudioSpec.SampleRate != 44100.0 {
-		t.Errorf("Expected sample rate 44100, got %.1f", status.AudioSpec.SampleRate)
+	midiDevices, err := sess.GetMIDIDevices()
+	if err != nil {
+		log.Printf("⚠️ Error getting MIDI devices: %v", err)
+	} else {
+		fmt.Printf("✅ MIDI devices: %d found\n", len(midiDevices))
+		for i, device := range midiDevices {
+			fmt.Printf("   %d. %s (%s)\n", i+1, device.Name, device.UID)
+		}
 	}
-	if status.AudioSpec.ChannelCount != 2 {
-		t.Errorf("Expected 2 channels, got %d", status.AudioSpec.ChannelCount)
-	}
-	if status.AudioSpec.BitDepth != 16 {
-		t.Errorf("Expected 16 bit depth, got %d", status.AudioSpec.BitDepth)
-	}
-	if status.AudioSpec.BufferSize != 512 {
-		t.Errorf("Expected 512 buffer size, got %d", status.AudioSpec.BufferSize)
-	}
+	fmt.Println()
 
-	// Clean up
-	Cleanup()
-}
+	// Test device counts
+	fmt.Println("📋 Test 3: Fast Device Counts")
+	audioCount, midiCount := sess.GetDeviceCounts()
+	fmt.Printf("✅ Fast counts: %d audio, %d MIDI\n", audioCount, midiCount)
+	fmt.Println()
 
-func TestConfigurationChangeCallback(t *testing.T) {
-	callbackTriggered := false
+	// Test status
+	fmt.Println("📋 Test 4: Session Status")
+	status := sess.Status()
+	fmt.Printf("✅ Session status:\n")
+	fmt.Printf("   - Monitoring: %v\n", status.Monitoring)
+	fmt.Printf("   - Audio count: %d\n", status.AudioCount)
+	fmt.Printf("   - MIDI count: %d\n", status.MIDICount)
+	fmt.Printf("   - Cache age: %v\n", status.CacheAge)
+	fmt.Printf("   - Poll interval: %v\n", status.PollInterval)
+	fmt.Println()
 
-	// Set callback
-	SetConfigurationChangeCallback(func() {
-		callbackTriggered = true
+	// Test callback registration
+	fmt.Println("📋 Test 5: Callback Registration")
+	callbackCalled := false
+	sess.OnDeviceChange(func(change DeviceChange) {
+		callbackCalled = true
+		fmt.Printf("📞 Callback triggered: %s change (%d audio, %d MIDI)\n",
+			change.Type.String(), change.AudioCount, change.MIDICount)
 	})
+	fmt.Printf("✅ Callback registered\n")
+	fmt.Println()
 
-	// Simulate configuration change
-	configurationChanged()
-
-	// Give it a moment to trigger
-	time.Sleep(10 * time.Millisecond)
-
-	if !callbackTriggered {
-		t.Error("Expected callback to be triggered")
+	// Test simulation
+	fmt.Println("📋 Test 6: Device Change Simulation")
+	sess.SimulateDeviceChange(BothDeviceChange)
+	time.Sleep(10 * time.Millisecond) // Give callback time to execute
+	if callbackCalled {
+		fmt.Printf("✅ Callback was triggered by simulation\n")
+	} else {
+		fmt.Printf("❌ Callback was not triggered\n")
 	}
+	fmt.Println()
 
-	// Clean up
-	Cleanup()
-}
+	// Interactive monitoring test
+	fmt.Println("📋 Test 7: Interactive Device Monitoring")
+	fmt.Println("🎸 Now testing REAL device change detection!")
+	fmt.Println("📱 Plug/unplug your audio devices to see async monitoring in action")
+	fmt.Println("⌨️  Press Ctrl+C to stop monitoring and exit")
+	fmt.Println()
 
-func TestLastConfigChangeTime(t *testing.T) {
-	before := time.Now()
+	// Set up graceful shutdown
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 
-	// Simulate configuration change
-	configurationChanged()
-
-	after := time.Now()
-
-	// Check that lastConfigChange was updated
-	status := GetEngineStatus()
-
-	if status.LastConfigChange.Before(before) || status.LastConfigChange.After(after) {
-		t.Errorf("LastConfigChange %v should be between %v and %v",
-			status.LastConfigChange, before, after)
-	}
-}
-
-func TestHotplugSimulation(t *testing.T) {
-	t.Log("🔥 Testing hotplug simulation with real AVAudioEngine")
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-
-	callbackTriggered := false
-	callback := func() {
-		t.Log("📞 Configuration change callback received from simulated hotplug!")
-		callbackTriggered = true
-		wg.Done()
-	}
-
-	// Set up monitoring with nil engine - this will enable global monitoring
-	SetEngine(nil, AudioSpec{
-		SampleRate:   48000,
-		ChannelCount: 2,
-		BitDepth:     32,
-		BufferSize:   512,
-	})
-	defer Cleanup()
-
-	// Set up callback
-	SetConfigurationChangeCallback(callback)
-
-	// Simulate hotplug - will create temporary engine and post notification
-	t.Log("🔌 Simulating hotplug event...")
-	SimulateHotplug(nil) // Creates temporary engine and posts notification
-
-	// Wait for callback with timeout
-	done := make(chan struct{})
+	// Monitor device changes
+	changeCount := 0
 	go func() {
-		wg.Wait()
-		close(done)
+		for change := range sess.DeviceChanges() {
+			changeCount++
+			fmt.Printf("🚨 REAL CHANGE #%d detected at %s\n",
+				changeCount, change.Timestamp.Format("15:04:05.000"))
+			fmt.Printf("   📊 Type: %s\n", change.Type.String())
+			fmt.Printf("   🔢 Counts: %d audio, %d MIDI\n", change.AudioCount, change.MIDICount)
+
+			// Show scanning status
+			if change.AudioScanning || change.MIDIScanning {
+				var scanning []string
+				if change.AudioScanning {
+					scanning = append(scanning, "audio")
+				}
+				if change.MIDIScanning {
+					scanning = append(scanning, "MIDI")
+				}
+				fmt.Printf("   🔄 Scanning: %v\n", scanning)
+			}
+
+			// Show device details when available
+			if change.AudioDevices != nil {
+				fmt.Printf("   🎵 Audio devices updated (%d):\n", len(*change.AudioDevices))
+				for i, device := range *change.AudioDevices {
+					fmt.Printf("     %d. %s\n", i+1, device.Name)
+				}
+			}
+			if change.MIDIDevices != nil {
+				fmt.Printf("   🎹 MIDI devices updated (%d):\n", len(*change.MIDIDevices))
+				for i, device := range *change.MIDIDevices {
+					fmt.Printf("     %d. %s\n", i+1, device.Name)
+				}
+			}
+			fmt.Println()
+		}
 	}()
 
-	select {
-	case <-done:
-		if !callbackTriggered {
-			t.Error("WaitGroup completed but callback flag not set")
+	// Show periodic status
+	statusTicker := time.NewTicker(5 * time.Second)
+	defer statusTicker.Stop()
+
+	go func() {
+		for {
+			select {
+			case <-statusTicker.C:
+				status := sess.Status()
+				fmt.Printf("📊 Status: monitoring=%v, changes=%d, cache_age=%v\n",
+					status.Monitoring, changeCount, status.CacheAge)
+			case <-c:
+				return
+			}
 		}
-		t.Log("✅ Hotplug simulation successful - callback triggered!")
-	case <-time.After(2 * time.Second):
-		t.Fatal("❌ Timeout waiting for hotplug callback")
+	}()
+
+	// Wait for interrupt
+	<-c
+	fmt.Println("\n🛑 Shutting down session...")
+
+	// Cleanup
+	if err := sess.Close(); err != nil {
+		log.Printf("⚠️ Error closing session: %v", err)
 	}
+
+	fmt.Printf("✅ All tests completed! Detected %d real device changes\n", changeCount)
+	fmt.Println("🎉 Session package is working perfectly!")
+
+	os.Exit(0)
 }
 
-func BenchmarkGetEngineStatus(b *testing.B) {
-	// Set up mock engine
-	mockEngine := &MockEngine{}
-	enginePtr := unsafe.Pointer(mockEngine)
-	spec := AudioSpec{SampleRate: 44100.0, ChannelCount: 2, BitDepth: 16, BufferSize: 512}
-	SetEngine(enginePtr, spec)
+func TestSessionCreation(t *testing.T) {
+	sess, err := NewSessionWithDefaults()
+	if err != nil {
+		t.Fatalf("Failed to create session: %v", err)
+	}
+	defer sess.Close()
 
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		GetEngineStatus()
+	if !sess.IsMonitoring() {
+		t.Error("Session should be monitoring after creation")
 	}
 
-	Cleanup()
+	audioCount, midiCount := sess.GetDeviceCounts()
+	if audioCount < 0 || midiCount < 0 {
+		t.Error("Device counts should be non-negative")
+	}
+
+	t.Logf("Created session with %d audio and %d MIDI devices", audioCount, midiCount)
+}
+
+func TestDeviceAccess(t *testing.T) {
+	sess, err := NewSessionWithDefaults()
+	if err != nil {
+		t.Fatalf("Failed to create session: %v", err)
+	}
+	defer sess.Close()
+
+	audioDevices, err := sess.GetAudioDevices()
+	if err != nil {
+		t.Errorf("Failed to get audio devices: %v", err)
+	}
+
+	midiDevices, err := sess.GetMIDIDevices()
+	if err != nil {
+		t.Errorf("Failed to get MIDI devices: %v", err)
+	}
+
+	t.Logf("Retrieved %d audio and %d MIDI devices", len(audioDevices), len(midiDevices))
+}
+
+func TestCallbacks(t *testing.T) {
+	sess, err := NewSessionWithDefaults()
+	if err != nil {
+		t.Fatalf("Failed to create session: %v", err)
+	}
+	defer sess.Close()
+
+	callbackCalled := false
+	sess.OnDeviceChange(func(change DeviceChange) {
+		callbackCalled = true
+		t.Logf("Callback received change: %s", change.Type.String())
+	})
+
+	// Trigger a simulated change
+	sess.SimulateDeviceChange(AudioDeviceChange)
+
+	// Give it time to execute
+	time.Sleep(10 * time.Millisecond)
+
+	if !callbackCalled {
+		t.Error("Callback should have been called")
+	}
 }

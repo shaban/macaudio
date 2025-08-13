@@ -11,6 +11,8 @@ package devices
 // Function declarations
 char* getAudioDevices(void);
 char* getMIDIDevices(void);
+int countAudioDevices(void);
+int countMIDIDevices(void);
 */
 import "C"
 import (
@@ -403,4 +405,40 @@ func GetMIDI() (MIDIDevices, error) {
 	}
 
 	return MIDIDevices(devices), nil
+}
+
+// GetAudioDeviceCount returns the number of audio devices without full enumeration
+// This is much faster than GetAudio() when you only need the count for change detection
+func GetAudioDeviceCount() (int, error) {
+	count := int(C.countAudioDevices())
+	if count < 0 {
+		return 0, fmt.Errorf("failed to get audio device count")
+	}
+	return count, nil
+}
+
+// GetMIDIDeviceCount returns the number of MIDI devices without full enumeration
+// This is much faster than GetMIDI() when you only need the count for change detection
+func GetMIDIDeviceCount() (int, error) {
+	count := int(C.countMIDIDevices())
+	if count < 0 {
+		return 0, fmt.Errorf("failed to get MIDI device count")
+	}
+	return count, nil
+}
+
+// GetDeviceCounts returns both audio and MIDI device counts in a single call
+// Useful for hotplug detection when you need to check both device types quickly
+func GetDeviceCounts() (audioCount, midiCount int, err error) {
+	audioCount = int(C.countAudioDevices())
+	if audioCount < 0 {
+		return 0, 0, fmt.Errorf("failed to get audio device count")
+	}
+
+	midiCount = int(C.countMIDIDevices())
+	if midiCount < 0 {
+		return 0, 0, fmt.Errorf("failed to get MIDI device count")
+	}
+
+	return audioCount, midiCount, nil
 }
