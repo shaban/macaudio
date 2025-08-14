@@ -390,6 +390,13 @@ func (bc *BaseChannel) ConnectToMaster(eng *engine.Engine) error {
 		return fmt.Errorf("channel is already connected to master")
 	}
 
+	// Ensure our mixer is attached to the engine
+	if installed, err := node.IsInstalledOnEngine(bc.outputMixer); err == nil && !installed {
+		if err := eng.Attach(bc.outputMixer); err != nil {
+			return fmt.Errorf("attach mixer failed: %w", err)
+		}
+	}
+
 	// Get main mixer node from engine
 	mainMixerPtr, err := eng.MainMixerNode()
 	if err != nil {

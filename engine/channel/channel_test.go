@@ -313,3 +313,37 @@ func TestChannel_ConnectPluginChainToMixer_WithSingleAppleEffect(t *testing.T) {
 		t.Fatalf("ConnectPluginChainToMixer failed: %v", err)
 	}
 }
+
+func TestChannel_MasterRouting_Smoke(t *testing.T) {
+	eng, err := engine.New(engine.DefaultAudioSpec())
+	if err != nil || eng == nil {
+		t.Skip("Cannot create AVAudioEngine for testing")
+	}
+	defer eng.Destroy()
+
+	ch, err := NewBaseChannel(BaseChannelConfig{
+		Name:           "Master Smoke",
+		EnginePtr:      eng.Ptr(),
+		EngineInstance: eng,
+	})
+	if err != nil { t.Fatalf("channel: %v", err) }
+	defer ch.Release()
+
+	// Connect to master
+	if err := ch.ConnectToMaster(eng); err != nil {
+		t.Fatalf("connect to master: %v", err)
+	}
+	if !ch.IsConnectedToMaster() { t.Fatalf("expected connectedToMaster = true") }
+
+	// Disconnect
+	if err := ch.DisconnectFromMaster(eng); err != nil {
+		t.Fatalf("disconnect from master: %v", err)
+	}
+	if ch.IsConnectedToMaster() { t.Fatalf("expected connectedToMaster = false") }
+
+	// Reconnect
+	if err := ch.ConnectToMaster(eng); err != nil {
+		t.Fatalf("reconnect to master: %v", err)
+	}
+	if !ch.IsConnectedToMaster() { t.Fatalf("expected connectedToMaster = true after reconnect") }
+}
