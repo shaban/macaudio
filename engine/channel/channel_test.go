@@ -23,6 +23,8 @@ func (mc *mockChannel) SetVolume(volume float32) error                          
 func (mc *mockChannel) GetVolume() (float32, error)                                 { return 0.8, nil }
 func (mc *mockChannel) SetMute(muted bool) error                                    { return nil }
 func (mc *mockChannel) GetMute() (bool, error)                                      { return false, nil }
+func (mc *mockChannel) SetPan(pan float32) error                                    { return nil }
+func (mc *mockChannel) GetPan() (float32, error)                                    { return 0.0, nil }
 func (mc *mockChannel) GetPluginChain() *pluginchain.PluginChain                    { return nil }
 func (mc *mockChannel) AddEffect(plugin *plugins.Plugin) error                      { return nil }
 func (mc *mockChannel) AddEffectFromPluginInfo(pluginInfo plugins.PluginInfo) error { return nil }
@@ -346,4 +348,30 @@ func TestChannel_MasterRouting_Smoke(t *testing.T) {
 		t.Fatalf("reconnect to master: %v", err)
 	}
 	if !ch.IsConnectedToMaster() { t.Fatalf("expected connectedToMaster = true after reconnect") }
+}
+
+func TestBaseChannel_VolumeAndPan(t *testing.T) {
+	eng, err := engine.New(engine.DefaultAudioSpec())
+	if err != nil || eng == nil { t.Skip("Cannot create engine") }
+	defer eng.Destroy()
+
+	ch, err := NewBaseChannel(BaseChannelConfig{
+		Name:           "MixCtl",
+		EnginePtr:      eng.Ptr(),
+		EngineInstance: eng,
+	})
+	if err != nil { t.Fatalf("channel: %v", err) }
+	defer ch.Release()
+
+	// Volume set/get
+	if err := ch.SetVolume(0.42); err != nil { t.Fatalf("set vol: %v", err) }
+	if v, err := ch.GetVolume(); err != nil { t.Fatalf("get vol: %v", err) } else if v == 0.0 {
+		t.Fatalf("unexpected zero volume")
+	}
+
+	// Pan set/get
+	if err := ch.SetPan(-0.5); err != nil { t.Fatalf("set pan: %v", err) }
+	if p, err := ch.GetPan(); err != nil { t.Fatalf("get pan: %v", err) } else if p < -1.01 || p > 1.01 {
+		t.Fatalf("pan out of range: %v", p)
+	}
 }

@@ -23,6 +23,9 @@ type Channel interface {
 	GetVolume() (float32, error)
 	SetMute(muted bool) error
 	GetMute() (bool, error)
+	// Stereo balance control (-1.0 = left, 0.0 = center, 1.0 = right)
+	SetPan(pan float32) error
+	GetPan() (float32, error)
 
 	// Plugin Chain Management
 	GetPluginChain() *pluginchain.PluginChain
@@ -173,6 +176,28 @@ func (bc *BaseChannel) GetMute() (bool, error) {
 		return false, err
 	}
 	return volume == 0.0, nil
+}
+
+// SetPan sets the stereo pan on the channel's output mixer input bus
+func (bc *BaseChannel) SetPan(pan float32) error {
+	if bc.released {
+		return fmt.Errorf("channel has been released")
+	}
+	if bc.outputMixer == nil {
+		return fmt.Errorf("output mixer not available")
+	}
+	return node.SetMixerPan(bc.outputMixer, pan, 0)
+}
+
+// GetPan gets the current pan from the channel's output mixer input bus
+func (bc *BaseChannel) GetPan() (float32, error) {
+	if bc.released {
+		return 0, fmt.Errorf("channel has been released")
+	}
+	if bc.outputMixer == nil {
+		return 0, fmt.Errorf("output mixer not available")
+	}
+	return node.GetMixerPan(bc.outputMixer, 0)
 }
 
 // GetPluginChain returns the channel's plugin chain
