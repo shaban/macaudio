@@ -252,4 +252,9 @@ func TestBaseChannelWithRealEngine(t *testing.T) {
 
 	t.Logf("✓ Channel created successfully with input node: %p, output node: %p", inputNode, outputNode)
 	t.Logf("✓ Channel summary: %s", channel.Summary())
+
+	// With empty plugin chain, ConnectPluginChainToMixer should be a no-op
+	if err := channel.ConnectPluginChainToMixer(); err != nil {
+		t.Fatalf("ConnectPluginChainToMixer on empty chain should not error: %v", err)
+	}
 }

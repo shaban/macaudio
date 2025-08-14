@@ -346,8 +346,30 @@ func (bc *BaseChannel) ConnectPluginChainToMixer() error {
 		return nil
 	}
 
-	// This would need to use avaudio/engine.Connect() to connect the chain output to mixer input
-	// For now, we'll return success - the concrete implementations will handle this
+	// Ensure output mixer is attached to engine before connecting
+	if bc.engineInstance == nil {
+		return fmt.Errorf("engine instance not available")
+	}
+
+	// Best-effort: attach mixer if not already installed on engine
+	if installed, err := node.IsInstalledOnEngine(bc.outputMixer); err == nil && !installed {
+		if err := bc.engineInstance.Attach(bc.outputMixer); err != nil {
+			return fmt.Errorf("attach mixer failed: %w", err)
+		}
+	}
+
+	// Obtain the chain output node and connect to channel mixer (bus 0 → 0)
+	outPtr, err := bc.pluginChain.GetOutputNode()
+	if err != nil {
+		return fmt.Errorf("get chain output: %w", err)
+	}
+	if outPtr == nil {
+		return fmt.Errorf("chain output node is nil")
+	}
+
+	if err := bc.engineInstance.Connect(outPtr, bc.outputMixer, 0, 0); err != nil {
+		return fmt.Errorf("connect chain→mixer failed: %w", err)
+	}
 	return nil
 }
 
