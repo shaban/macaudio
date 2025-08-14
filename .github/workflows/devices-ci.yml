@@ -29,7 +29,7 @@ jobs:
         run: go vet ./...
 
       - name: Test (all)
-  run: go test -v ./... -timeout 20m
+        run: go test -v ./... -timeout 20m
 
       - name: Test with race detector (all)
         run: go test -race -v ./... -timeout 20m
