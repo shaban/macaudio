@@ -47,7 +47,7 @@ func GetInputFormatForBus(nodePtr unsafe.Pointer, bus int) (unsafe.Pointer, erro
 	if nodePtr == nil {
 		return nil, errors.New("node pointer is nil")
 	}
-	
+
 	result := C.audionode_input_format_for_bus(nodePtr, C.int(bus))
 	if result.error != nil {
 		return nil, errors.New(C.GoString(result.error))
@@ -60,7 +60,7 @@ func GetOutputFormatForBus(nodePtr unsafe.Pointer, bus int) (unsafe.Pointer, err
 	if nodePtr == nil {
 		return nil, errors.New("node pointer is nil")
 	}
-	
+
 	result := C.audionode_output_format_for_bus(nodePtr, C.int(bus))
 	if result.error != nil {
 		return nil, errors.New(C.GoString(result.error))
@@ -73,7 +73,7 @@ func GetNumberOfInputs(nodePtr unsafe.Pointer) (int, error) {
 	if nodePtr == nil {
 		return 0, errors.New("node pointer is nil")
 	}
-	
+
 	var result C.int
 	errorStr := C.audionode_get_number_of_inputs(nodePtr, &result)
 	if errorStr != nil {
@@ -87,7 +87,7 @@ func GetNumberOfOutputs(nodePtr unsafe.Pointer) (int, error) {
 	if nodePtr == nil {
 		return 0, errors.New("node pointer is nil")
 	}
-	
+
 	var result C.int
 	errorStr := C.audionode_get_number_of_outputs(nodePtr, &result)
 	if errorStr != nil {
@@ -101,7 +101,7 @@ func IsInstalledOnEngine(nodePtr unsafe.Pointer) (bool, error) {
 	if nodePtr == nil {
 		return false, errors.New("node pointer is nil")
 	}
-	
+
 	var result C.bool
 	errorStr := C.audionode_is_installed_on_engine(nodePtr, &result)
 	if errorStr != nil {
@@ -115,7 +115,7 @@ func LogInfo(nodePtr unsafe.Pointer) error {
 	if nodePtr == nil {
 		return errors.New("node pointer is nil")
 	}
-	
+
 	errorStr := C.audionode_log_info(nodePtr)
 	if errorStr != nil {
 		return errors.New(C.GoString(errorStr))
@@ -139,7 +139,7 @@ func ReleaseMixer(mixerPtr unsafe.Pointer) error {
 	if mixerPtr == nil {
 		return errors.New("mixer pointer is nil")
 	}
-	
+
 	errorStr := C.audiomixer_release(mixerPtr)
 	if errorStr != nil {
 		return errors.New(C.GoString(errorStr))
@@ -205,60 +205,94 @@ func GetMixerPan(mixerPtr unsafe.Pointer, inputBus int) (float32, error) {
 
 // SetConnectionInputVolume sets the gain for a specific source->mixer input connection.
 func SetConnectionInputVolume(sourcePtr, mixerPtr unsafe.Pointer, destBus int, volume float32) error {
-	if sourcePtr == nil { return errors.New("source pointer is nil") }
-	if mixerPtr == nil { return errors.New("mixer pointer is nil") }
+	if sourcePtr == nil {
+		return errors.New("source pointer is nil")
+	}
+	if mixerPtr == nil {
+		return errors.New("mixer pointer is nil")
+	}
 	errStr := C.audiomixer_set_input_volume_for_connection(sourcePtr, mixerPtr, C.int(destBus), C.float(volume))
-	if errStr != nil { return errors.New(C.GoString(errStr)) }
+	if errStr != nil {
+		return errors.New(C.GoString(errStr))
+	}
 	return nil
 }
 
 // GetConnectionInputVolume reads the gain for a specific source->mixer input connection.
 func GetConnectionInputVolume(sourcePtr, mixerPtr unsafe.Pointer, destBus int) (float32, error) {
-	if sourcePtr == nil { return 0, errors.New("source pointer is nil") }
-	if mixerPtr == nil { return 0, errors.New("mixer pointer is nil") }
+	if sourcePtr == nil {
+		return 0, errors.New("source pointer is nil")
+	}
+	if mixerPtr == nil {
+		return 0, errors.New("mixer pointer is nil")
+	}
 	var result C.float
 	errStr := C.audiomixer_get_input_volume_for_connection(sourcePtr, mixerPtr, C.int(destBus), &result)
-	if errStr != nil { return 0, errors.New(C.GoString(errStr)) }
+	if errStr != nil {
+		return 0, errors.New(C.GoString(errStr))
+	}
 	return float32(result), nil
 }
 
 // SetConnectionInputPan sets the pan for a specific source->mixer input connection.
 func SetConnectionInputPan(sourcePtr, mixerPtr unsafe.Pointer, destBus int, pan float32) error {
-	if sourcePtr == nil { return errors.New("source pointer is nil") }
-	if mixerPtr == nil { return errors.New("mixer pointer is nil") }
+	if sourcePtr == nil {
+		return errors.New("source pointer is nil")
+	}
+	if mixerPtr == nil {
+		return errors.New("mixer pointer is nil")
+	}
 	errStr := C.audiomixer_set_input_pan_for_connection(sourcePtr, mixerPtr, C.int(destBus), C.float(pan))
-	if errStr != nil { return errors.New(C.GoString(errStr)) }
+	if errStr != nil {
+		return errors.New(C.GoString(errStr))
+	}
 	return nil
 }
 
 // GetConnectionInputPan reads the pan for a specific source->mixer input connection.
 func GetConnectionInputPan(sourcePtr, mixerPtr unsafe.Pointer, destBus int) (float32, error) {
-	if sourcePtr == nil { return 0, errors.New("source pointer is nil") }
-	if mixerPtr == nil { return 0, errors.New("mixer pointer is nil") }
+	if sourcePtr == nil {
+		return 0, errors.New("source pointer is nil")
+	}
+	if mixerPtr == nil {
+		return 0, errors.New("mixer pointer is nil")
+	}
 	var result C.float
 	errStr := C.audiomixer_get_input_pan_for_connection(sourcePtr, mixerPtr, C.int(destBus), &result)
-	if errStr != nil { return 0, errors.New(C.GoString(errStr)) }
+	if errStr != nil {
+		return 0, errors.New(C.GoString(errStr))
+	}
 	return float32(result), nil
 }
 
 // ReleaseNode provides a generic release hook for AVAudioNode/AVAudioUnit wrappers.
 func ReleaseNode(ptr unsafe.Pointer) error {
-	if ptr == nil { return nil }
-	if errStr := C.audionode_release(ptr); errStr != nil { return errors.New(C.GoString(errStr)) }
+	if ptr == nil {
+		return nil
+	}
+	if errStr := C.audionode_release(ptr); errStr != nil {
+		return errors.New(C.GoString(errStr))
+	}
 	return nil
 }
 
 // CreateMatrixMixer returns a new AVAudioUnitMatrixMixer instance as an AVAudioNode pointer.
 func CreateMatrixMixer() (unsafe.Pointer, error) {
 	res := C.matrixmixer_create()
-	if res.error != nil { return nil, errors.New(C.GoString(res.error)) }
+	if res.error != nil {
+		return nil, errors.New(C.GoString(res.error))
+	}
 	return unsafe.Pointer(res.result), nil
 }
 
 // ConfigureMatrixInvert sets diagonal gains to -1.0 for polarity inversion.
 func ConfigureMatrixInvert(unitPtr unsafe.Pointer) error {
-	if unitPtr == nil { return errors.New("unit pointer is nil") }
-	if errStr := C.matrixmixer_configure_invert(unitPtr); errStr != nil { return errors.New(C.GoString(errStr)) }
+	if unitPtr == nil {
+		return errors.New("unit pointer is nil")
+	}
+	if errStr := C.matrixmixer_configure_invert(unitPtr); errStr != nil {
+		return errors.New(C.GoString(errStr))
+	}
 	return nil
 }
 

@@ -58,10 +58,10 @@ type Send struct {
 	Mode        SendMode
 
 	// internal wiring state
-	mixer    unsafe.Pointer   // per-send gain mixer (created on connect)
-	busInput unsafe.Pointer   // destination bus mixer input pointer
-	busIndex int              // destination bus input index
-	prev     float32          // previous non-zero level for unmute restoration
+	mixer    unsafe.Pointer // per-send gain mixer (created on connect)
+	busInput unsafe.Pointer // destination bus mixer input pointer
+	busIndex int            // destination bus input index
+	prev     float32        // previous non-zero level for unmute restoration
 }
 
 // SendMode chooses where in the signal flow a send taps the audio:
@@ -79,37 +79,53 @@ const (
 // SoloManager coordinates solo state across channels in a group.
 // When any channels are soloed, all others are muted (solo-muted) until no solos remain.
 type SoloManager struct {
-	mu       sync.Mutex
-	members  map[*BaseChannel]struct{}
-	soloed   map[*BaseChannel]struct{}
+	mu      sync.Mutex
+	members map[*BaseChannel]struct{}
+	soloed  map[*BaseChannel]struct{}
 }
 
 var DefaultSolo = &SoloManager{members: map[*BaseChannel]struct{}{}, soloed: map[*BaseChannel]struct{}{}}
 
 func (sm *SoloManager) Register(ch *BaseChannel) {
-	if sm == nil || ch == nil { return }
-	sm.mu.Lock(); defer sm.mu.Unlock()
+	if sm == nil || ch == nil {
+		return
+	}
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
 	sm.members[ch] = struct{}{}
 }
 
 func (sm *SoloManager) Unregister(ch *BaseChannel) {
-	if sm == nil || ch == nil { return }
-	sm.mu.Lock(); defer sm.mu.Unlock()
+	if sm == nil || ch == nil {
+		return
+	}
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
 	delete(sm.members, ch)
 	delete(sm.soloed, ch)
 	sm.recompute()
 }
 
 func (sm *SoloManager) SetSolo(ch *BaseChannel, on bool) {
-	if sm == nil || ch == nil { return }
-	sm.mu.Lock(); defer sm.mu.Unlock()
-	if on { sm.soloed[ch] = struct{}{} } else { delete(sm.soloed, ch) }
+	if sm == nil || ch == nil {
+		return
+	}
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if on {
+		sm.soloed[ch] = struct{}{}
+	} else {
+		delete(sm.soloed, ch)
+	}
 	sm.recompute()
 }
 
 func (sm *SoloManager) IsSoloed(ch *BaseChannel) bool {
-	if sm == nil || ch == nil { return false }
-	sm.mu.Lock(); defer sm.mu.Unlock()
+	if sm == nil || ch == nil {
+		return false
+	}
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
 	_, ok := sm.soloed[ch]
 	return ok
 }
@@ -138,15 +154,15 @@ type BaseChannel struct {
 	released          bool
 	connectedToMaster bool // Track master connection state
 	// state controls
-	userMuted         bool    // explicit mute requested by user
-	soloMuted         bool    // muted due to another channel's solo state
-	lastVolume        float32 // remembered volume for unmute
+	userMuted  bool    // explicit mute requested by user
+	soloMuted  bool    // muted due to another channel's solo state
+	lastVolume float32 // remembered volume for unmute
 	// metering
 	meterMu    sync.RWMutex
 	meterTap   *tap.Tap
 	sendMeters map[string]*tap.Tap
 	// phase invert
-	invertEnabled bool          // logical flag for phase inversion
+	invertEnabled bool           // logical flag for phase inversion
 	invertNode    unsafe.Pointer // placeholder node inserted between chain→mixer
 }
 
@@ -197,8 +213,8 @@ func NewBaseChannel(config BaseChannelConfig) (*BaseChannel, error) {
 		lastVolume:        0.8, // sensible default fader value
 		meterTap:          nil,
 		sendMeters:        make(map[string]*tap.Tap),
-	invertEnabled:     false,
-	invertNode:        nil,
+		invertEnabled:     false,
+		invertNode:        nil,
 	}
 	// Initialize mixer volume to lastVolume
 	_ = node.SetMixerVolume(outputMixer, bc.lastVolume, 0)
@@ -277,7 +293,9 @@ func (bc *BaseChannel) SetMute(muted bool) error {
 
 // GetMute reports mute state approximately by checking if volume == 0.0.
 func (bc *BaseChannel) GetMute() (bool, error) {
-	if bc.released { return false, fmt.Errorf("channel has been released") }
+	if bc.released {
+		return false, fmt.Errorf("channel has been released")
+	}
 	return bc.userMuted, nil
 }
 
@@ -473,7 +491,9 @@ func (bc *BaseChannel) GetSendLevel(sendName string) (float32, error) {
 	bc.sendsMu.RLock()
 	defer bc.sendsMu.RUnlock()
 	send, ok := bc.sends[sendName]
-	if !ok { return 0, fmt.Errorf("send '%s' does not exist", sendName) }
+	if !ok {
+		return 0, fmt.Errorf("send '%s' does not exist", sendName)
+	}
 	return send.Level, nil
 }
 
@@ -482,7 +502,9 @@ func (bc *BaseChannel) GetSendMute(sendName string) (bool, error) {
 	bc.sendsMu.RLock()
 	defer bc.sendsMu.RUnlock()
 	send, ok := bc.sends[sendName]
-	if !ok { return false, fmt.Errorf("send '%s' does not exist", sendName) }
+	if !ok {
+		return false, fmt.Errorf("send '%s' does not exist", sendName)
+	}
 	return send.Mute, nil
 }
 
@@ -562,7 +584,9 @@ func (bc *BaseChannel) ConnectSendToBus(eng *engine.Engine, sendName string, bus
 		// If destination unchanged, just ensure mixer volume reflects current state
 		if send.busInput == busInput && send.busIndex == toBus {
 			vol := send.Level
-			if send.Mute { vol = 0 }
+			if send.Mute {
+				vol = 0
+			}
 			_ = node.SetMixerVolume(send.mixer, vol, 0)
 			return nil
 		}
@@ -591,7 +615,9 @@ func (bc *BaseChannel) ConnectSendTo(sendName string, bus *Bus) (int, error) {
 	if bc.engineInstance == nil {
 		return -1, fmt.Errorf("engine instance not available")
 	}
-	if bus == nil || bus.mixer == nil { return -1, fmt.Errorf("bus not initialized") }
+	if bus == nil || bus.mixer == nil {
+		return -1, fmt.Errorf("bus not initialized")
+	}
 	idx := bus.NextInput()
 	if err := bc.ConnectSendToBus(bc.engineInstance, sendName, bus.mixer, idx); err != nil {
 		return -1, err
@@ -601,7 +627,9 @@ func (bc *BaseChannel) ConnectSendTo(sendName string, bus *Bus) (int, error) {
 
 // CreateAndConnectSend creates a send and connects it to the given Bus in one call.
 func (bc *BaseChannel) CreateAndConnectSend(name string, dest Channel, bus *Bus, level float32, mode SendMode) (int, error) {
-	if err := bc.CreateSendWithMode(name, dest, level, mode); err != nil { return -1, err }
+	if err := bc.CreateSendWithMode(name, dest, level, mode); err != nil {
+		return -1, err
+	}
 	return bc.ConnectSendTo(name, bus)
 }
 
@@ -638,7 +666,9 @@ func (bc *BaseChannel) DisconnectSend(eng *engine.Engine, sendName string) error
 func (bc *BaseChannel) RemoveSend(eng *engine.Engine, sendName string) error {
 	bc.routeMu.Lock()
 	defer bc.routeMu.Unlock()
-	if err := bc.DisconnectSend(eng, sendName); err != nil { return err }
+	if err := bc.DisconnectSend(eng, sendName); err != nil {
+		return err
+	}
 	bc.sendsMu.Lock()
 	delete(bc.sends, sendName)
 	bc.sendsMu.Unlock()
@@ -916,9 +946,13 @@ func (bc *BaseChannel) IsPhaseInverted() bool { return bc.invertEnabled }
 
 // internal: applyEffectiveVolume computes and applies volume based on user and solo state
 func (bc *BaseChannel) applyEffectiveVolume() error {
-	if bc.outputMixer == nil { return fmt.Errorf("output mixer not available") }
+	if bc.outputMixer == nil {
+		return fmt.Errorf("output mixer not available")
+	}
 	vol := bc.lastVolume
-	if bc.userMuted || bc.soloMuted { vol = 0 }
+	if bc.userMuted || bc.soloMuted {
+		vol = 0
+	}
 	return node.SetMixerVolume(bc.outputMixer, vol, 0)
 }
 
@@ -940,16 +974,27 @@ func (bc *BaseChannel) IsSoloed() bool {
 
 // EnableOutputMetering installs or removes a tap on the channel's output mixer bus 0.
 func (bc *BaseChannel) EnableOutputMetering(eng *engine.Engine, enable bool) error {
-	if bc.released { return fmt.Errorf("channel has been released") }
-	if eng == nil { return fmt.Errorf("engine instance cannot be nil") }
-	bc.meterMu.Lock(); defer bc.meterMu.Unlock()
+	if bc.released {
+		return fmt.Errorf("channel has been released")
+	}
+	if eng == nil {
+		return fmt.Errorf("engine instance cannot be nil")
+	}
+	bc.meterMu.Lock()
+	defer bc.meterMu.Unlock()
 	if enable {
-		if bc.meterTap != nil && bc.meterTap.IsInstalled() { return nil }
+		if bc.meterTap != nil && bc.meterTap.IsInstalled() {
+			return nil
+		}
 		if installed, err := node.IsInstalledOnEngine(bc.outputMixer); err == nil && !installed {
-			if err := eng.Attach(bc.outputMixer); err != nil { return fmt.Errorf("attach mixer for meter: %w", err) }
+			if err := eng.Attach(bc.outputMixer); err != nil {
+				return fmt.Errorf("attach mixer for meter: %w", err)
+			}
 		}
 		t, err := tap.InstallTap(eng.Ptr(), bc.outputMixer, 0)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		bc.meterTap = t
 		return nil
 	}
@@ -962,30 +1007,50 @@ func (bc *BaseChannel) EnableOutputMetering(eng *engine.Engine, enable bool) err
 
 // OutputRMS returns the current RMS level from the output meter tap.
 func (bc *BaseChannel) OutputRMS() (float64, error) {
-	bc.meterMu.RLock(); defer bc.meterMu.RUnlock()
-	if bc.meterTap == nil || !bc.meterTap.IsInstalled() { return 0, fmt.Errorf("output metering not enabled") }
+	bc.meterMu.RLock()
+	defer bc.meterMu.RUnlock()
+	if bc.meterTap == nil || !bc.meterTap.IsInstalled() {
+		return 0, fmt.Errorf("output metering not enabled")
+	}
 	m, err := bc.meterTap.GetMetrics()
-	if err != nil { return 0, err }
+	if err != nil {
+		return 0, err
+	}
 	return m.RMS, nil
 }
 
 // EnableSendMetering installs/removes a tap on the per-send mixer output.
 func (bc *BaseChannel) EnableSendMetering(eng *engine.Engine, sendName string, enable bool) error {
-	if bc.released { return fmt.Errorf("channel has been released") }
-	if eng == nil { return fmt.Errorf("engine instance cannot be nil") }
+	if bc.released {
+		return fmt.Errorf("channel has been released")
+	}
+	if eng == nil {
+		return fmt.Errorf("engine instance cannot be nil")
+	}
 	bc.sendsMu.RLock()
 	send, ok := bc.sends[sendName]
 	bc.sendsMu.RUnlock()
-	if !ok { return fmt.Errorf("send '%s' does not exist", sendName) }
-	bc.meterMu.Lock(); defer bc.meterMu.Unlock()
+	if !ok {
+		return fmt.Errorf("send '%s' does not exist", sendName)
+	}
+	bc.meterMu.Lock()
+	defer bc.meterMu.Unlock()
 	if enable {
-		if send.mixer == nil { return fmt.Errorf("send '%s' is not connected", sendName) }
-		if _, exists := bc.sendMeters[sendName]; exists { return nil }
+		if send.mixer == nil {
+			return fmt.Errorf("send '%s' is not connected", sendName)
+		}
+		if _, exists := bc.sendMeters[sendName]; exists {
+			return nil
+		}
 		if installed, err := node.IsInstalledOnEngine(send.mixer); err == nil && !installed {
-			if err := eng.Attach(send.mixer); err != nil { return fmt.Errorf("attach send mixer for meter: %w", err) }
+			if err := eng.Attach(send.mixer); err != nil {
+				return fmt.Errorf("attach send mixer for meter: %w", err)
+			}
 		}
 		t, err := tap.InstallTap(eng.Ptr(), send.mixer, 0)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		bc.sendMeters[sendName] = t
 		return nil
 	}
@@ -998,10 +1063,15 @@ func (bc *BaseChannel) EnableSendMetering(eng *engine.Engine, sendName string, e
 
 // SendRMS returns the current RMS level for a metered send.
 func (bc *BaseChannel) SendRMS(sendName string) (float64, error) {
-	bc.meterMu.RLock(); defer bc.meterMu.RUnlock()
+	bc.meterMu.RLock()
+	defer bc.meterMu.RUnlock()
 	t, ok := bc.sendMeters[sendName]
-	if !ok || t == nil || !t.IsInstalled() { return 0, fmt.Errorf("send metering not enabled for '%s'", sendName) }
+	if !ok || t == nil || !t.IsInstalled() {
+		return 0, fmt.Errorf("send metering not enabled for '%s'", sendName)
+	}
 	m, err := t.GetMetrics()
-	if err != nil { return 0, err }
+	if err != nil {
+		return 0, err
+	}
 	return m.RMS, nil
 }

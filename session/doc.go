@@ -6,10 +6,10 @@
 //   - Convenience APIs for quick scans, lazy details, and optional warm-up
 //
 // It is intentionally opinionated around performance and responsiveness:
-//   * Device change detection favors atomic count polling, then fan-out async scans
-//   * Plugin discovery keeps a quick index in index.json and full details in
+//   - Device change detection favors atomic count polling, then fan-out async scans
+//   - Plugin discovery keeps a quick index in index.json and full details in
 //     details/<hash>.json, enabling millisecond startup with cache hits
-//   * Single-flight deduplication prevents duplicate details introspections
+//   - Single-flight deduplication prevents duplicate details introspections
 //
 // Consumers can attach a MetricsHook to observe timings and cache behavior.
 package session
