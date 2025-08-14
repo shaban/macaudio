@@ -50,7 +50,18 @@ type Send struct {
 	Destination Channel
 	Level       float32
 	Mute        bool
+	Mode        SendMode
 }
+
+// SendMode controls whether a send taps the signal before or after the channel fader/pan
+type SendMode int
+
+const (
+	// PreFader taps after inserts (plugin chain output) and before volume/pan
+	PreFader SendMode = iota
+	// PostFader taps after volume/pan (channel mixer output)
+	PostFader
+)
 
 // BaseChannel provides common functionality for all channel types
 type BaseChannel struct {
@@ -254,7 +265,13 @@ func (bc *BaseChannel) GetInputNode() unsafe.Pointer {
 }
 
 // CreateSend creates an auxiliary send to another channel or bus
+// CreateSend creates a post-fader send by default (for backward compatibility)
 func (bc *BaseChannel) CreateSend(name string, destination Channel, level float32) error {
+	return bc.CreateSendWithMode(name, destination, level, PostFader)
+}
+
+// CreateSendWithMode creates an auxiliary send with explicit pre/post-fader mode
+func (bc *BaseChannel) CreateSendWithMode(name string, destination Channel, level float32, mode SendMode) error {
 	if bc.released {
 		return fmt.Errorf("channel has been released")
 	}
@@ -273,12 +290,7 @@ func (bc *BaseChannel) CreateSend(name string, destination Channel, level float3
 		return fmt.Errorf("send '%s' already exists", name)
 	}
 
-	bc.sends[name] = &Send{
-		Name:        name,
-		Destination: destination,
-		Level:       level,
-		Mute:        false,
-	}
+	bc.sends[name] = &Send{Name: name, Destination: destination, Level: level, Mute: false, Mode: mode}
 
 	return nil
 }
@@ -308,6 +320,56 @@ func (bc *BaseChannel) GetSends() map[string]*Send {
 		sendsCopy[name] = send
 	}
 	return sendsCopy
+}
+
+// ConnectSendToBus connects a named send to a destination bus input.
+// For PostFader, source is the channel's output mixer. For PreFader, source is the plugin chain output if present; otherwise also the mixer.
+func (bc *BaseChannel) ConnectSendToBus(eng *engine.Engine, sendName string, busInput unsafe.Pointer, toBus int) error {
+	if bc.released {
+		return fmt.Errorf("channel has been released")
+	}
+	if eng == nil {
+		return fmt.Errorf("engine instance cannot be nil")
+	}
+	if busInput == nil {
+		return fmt.Errorf("bus input pointer cannot be nil")
+	}
+	send, ok := bc.sends[sendName]
+	if !ok {
+		return fmt.Errorf("send '%s' does not exist", sendName)
+	}
+	if send.Mute || send.Level <= 0 {
+		// muted or zero level: consider no-op connect; caller may still manage connection externally
+		return nil
+	}
+	// Determine source node per mode
+	var source unsafe.Pointer
+	if send.Mode == PostFader {
+		source = bc.outputMixer
+		// Ensure attached
+		if installed, err := node.IsInstalledOnEngine(source); err == nil && !installed {
+			if err := eng.Attach(source); err != nil { return fmt.Errorf("attach mixer failed: %w", err) }
+		}
+	} else {
+		// PreFader: prefer plugin chain output when available
+		if bc.pluginChain != nil && !bc.pluginChain.IsEmpty() {
+			outPtr, err := bc.pluginChain.GetOutputNode()
+			if err != nil { return fmt.Errorf("get chain output: %w", err) }
+			source = outPtr
+		} else {
+			source = bc.outputMixer
+			if installed, err := node.IsInstalledOnEngine(source); err == nil && !installed {
+				if err := eng.Attach(source); err != nil { return fmt.Errorf("attach mixer failed: %w", err) }
+			}
+		}
+	}
+	if source == nil { return fmt.Errorf("send source node is nil") }
+
+	// Connect source to bus input. We don’t apply level here; that will be handled by bus input gain or future per-send gain node.
+	if err := eng.Connect(source, busInput, 0, toBus); err != nil {
+		return fmt.Errorf("connect send to bus failed: %w", err)
+	}
+	return nil
 }
 
 // Release releases all resources used by the base channel

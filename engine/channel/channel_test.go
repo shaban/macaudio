@@ -5,6 +5,7 @@ import (
 	"unsafe"
 
 	"github.com/shaban/macaudio/avaudio/engine"
+	"github.com/shaban/macaudio/avaudio/node"
 	"github.com/shaban/macaudio/avaudio/pluginchain"
 	"github.com/shaban/macaudio/plugins"
 )
@@ -374,4 +375,38 @@ func TestBaseChannel_VolumeAndPan(t *testing.T) {
 	if p, err := ch.GetPan(); err != nil { t.Fatalf("get pan: %v", err) } else if p < -1.01 || p > 1.01 {
 		t.Fatalf("pan out of range: %v", p)
 	}
+}
+
+func TestChannel_Sends_PreAndPostFader_Smoke(t *testing.T) {
+	eng, err := engine.New(engine.DefaultAudioSpec())
+	if err != nil || eng == nil { t.Skip("Cannot create engine") }
+	defer eng.Destroy()
+
+	// Create a destination bus mixer
+	busMixer, err := node.CreateMixer()
+	if err != nil || busMixer == nil { t.Fatalf("create bus mixer: %v", err) }
+	defer node.ReleaseMixer(busMixer)
+
+	// Attach bus mixer to engine for receiving connections
+	if err := eng.Attach(busMixer); err != nil { t.Fatalf("attach bus: %v", err) }
+
+	// Build a channel
+	ch, err := NewBaseChannel(BaseChannelConfig{
+		Name:           "SendChan",
+		EnginePtr:      eng.Ptr(),
+		EngineInstance: eng,
+	})
+	if err != nil { t.Fatalf("channel: %v", err) }
+	defer ch.Release()
+
+	// Post-fader send
+	if err := ch.CreateSendWithMode("post", &mockChannel{name: "dst"}, 1.0, PostFader); err != nil { t.Fatalf("create post: %v", err) }
+	if err := ch.ConnectSendToBus(eng, "post", busMixer, 0); err != nil { t.Fatalf("connect post: %v", err) }
+
+	// Pre-fader send (with empty chain, will use mixer as source)
+	if err := ch.CreateSendWithMode("pre", &mockChannel{name: "dst"}, 1.0, PreFader); err != nil { t.Fatalf("create pre: %v", err) }
+	if err := ch.ConnectSendToBus(eng, "pre", busMixer, 0); err != nil { t.Fatalf("connect pre: %v", err) }
+
+	// Disconnect bus input to clean up
+	if err := eng.DisconnectNodeInput(busMixer, 0); err != nil { t.Fatalf("disconnect bus: %v", err) }
 }
