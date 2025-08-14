@@ -258,3 +258,58 @@ func TestBaseChannelWithRealEngine(t *testing.T) {
 		t.Fatalf("ConnectPluginChainToMixer on empty chain should not error: %v", err)
 	}
 }
+
+func TestChannel_ConnectPluginChainToMixer_WithSingleAppleEffect(t *testing.T) {
+	// Create engine
+	eng, err := engine.New(engine.DefaultAudioSpec())
+	if err != nil || eng == nil {
+		t.Skip("Cannot create AVAudioEngine for testing")
+	}
+	defer eng.Destroy()
+
+	// Build channel
+	channel, err := NewBaseChannel(BaseChannelConfig{
+		Name:           "FX Test",
+		EnginePtr:      eng.Ptr(),
+		EngineInstance: eng,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create channel: %v", err)
+	}
+	defer channel.Release()
+
+	// Find a fast Apple stock effect (AUBandpass preferred)
+	infos, err := plugins.List()
+	if err != nil {
+		t.Skipf("Skipping: quick plugin list failed: %v", err)
+	}
+	var pick *plugins.PluginInfo
+	for _, i := range infos {
+		if i.ManufacturerID == "appl" && i.Type == "aufx" && i.Name == "Apple: AUBandpass" && i.Subtype == "bpas" {
+			ii := i
+			pick = &ii
+			break
+		}
+	}
+	if pick == nil {
+		// fallback: any Apple effect
+		for _, i := range infos {
+			if i.ManufacturerID == "appl" && i.Type == "aufx" {
+				ii := i
+				pick = &ii
+				break
+			}
+		}
+	}
+	if pick == nil {
+		t.Skip("No suitable Apple stock effect found; skipping")
+	}
+
+	// Add effect and connect chain to mixer
+	if err := channel.AddEffectFromPluginInfo(*pick); err != nil {
+		t.Fatalf("AddEffectFromPluginInfo failed: %v", err)
+	}
+	if err := channel.ConnectPluginChainToMixer(); err != nil {
+		t.Fatalf("ConnectPluginChainToMixer failed: %v", err)
+	}
+}
