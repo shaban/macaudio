@@ -1,0 +1,57 @@
+name: core-ci
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+    branches: [ "**" ]
+
+jobs:
+  test-core:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Cache Go build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+
+      - name: Go env
+        run: go env
+
+      - name: Vet (devices)
+        run: go vet ./devices
+
+      - name: Test (devices)
+        run: go test -v ./devices
+
+      - name: Test with race detector (devices)
+        run: go test -race -v ./devices
+
+      - name: Vet (plugins)
+        run: go vet ./plugins
+
+      - name: Test (plugins)
+        run: go test -v ./plugins
+
+      - name: Test with race detector (plugins)
+        run: go test -race -v ./plugins
+
+      - name: Vet (session)
+        run: go vet ./session
+
+      - name: Test (session)
+        run: go test -v ./session -timeout 15m
+
+      - name: Test with race detector (session)
+        run: go test -race -v ./session -timeout 15m

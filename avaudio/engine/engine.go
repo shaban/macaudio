@@ -42,9 +42,9 @@ type AudioSpec struct {
 // DefaultAudioSpec returns commonly used audio settings
 func DefaultAudioSpec() AudioSpec {
 	return AudioSpec{
-		SampleRate:   44100, // CD quality
+		SampleRate:   48000, // Common modern default
 		BufferSize:   512,   // Balanced latency/performance
-		BitDepth:     24,    // High quality
+		BitDepth:     32,    // Engines use 32-bit float internally
 		ChannelCount: 2,     // Stereo
 	}
 }

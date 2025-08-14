@@ -1,6 +1,17 @@
 //go:build darwin && cgo
 
-// Package plugins provides AU plugin enumeration and introspection for macOS
+// Package plugins provides AudioUnit (AU) plugin enumeration and introspection for macOS.
+//
+// Model:
+//   - Quick scan (List) returns lightweight PluginInfo entries (no parameters).
+//   - Introspection is keyed by a 4‑tuple (type, subtype, manufacturerID, name).
+//     Name disambiguates plugins within a (type, subtype, manufacturerID) suite.
+//
+// Public usage:
+//   - List() → PluginInfos, then filter chains (ByType/BySubtype/ByManufacturer/ByName/ByCategory).
+//   - PluginInfo.Introspect() → a single Plugin (uses the 4‑tuple including Name).
+//   - PluginInfos.Introspect() → []Plugin for batch introspection (maps .Introspect over the slice).
+//   - To operate on a suite, filter by the triplet on List() and then introspect each item.
 package plugins
 
 /*
@@ -12,24 +23,63 @@ package plugins
 
 // Declare the functions so CGO can find them
 char *QuickScanAudioUnits(void);
-char *IntrospectAudioUnits(const char *type, const char *subtype, const char *manufacturerID);
+// 4-arg version: name == nil/empty => suite mode (all matches)
+char *IntrospectAudioUnits(const char *type, const char *subtype, const char *manufacturerID, const char *name);
 void SetVerboseLogging(int enabled);
+// Timeout setters (configured from Go)
+void SetPresetLoadingTimeout(double seconds);
+void SetProcessUpdateTimeout(double seconds);
+void SetTotalTimeout(double seconds);
 */
 import "C"
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"unsafe"
 )
 
 // JSON logging control (follows devices package pattern)
 var enableJSONLogging = false
+var jsonLogWriter io.Writer
 
 // SetJSONLogging enables or disables JSON logging for debugging
+// SetJSONLogging enables/disables emission of raw JSON records from the native layer.
+// Use SetJSONLogWriter to redirect these records to a file for offline analysis.
 func SetJSONLogging(enabled bool) {
 	enableJSONLogging = enabled
 }
+
+// SetJSONLogWriter sets a destination for JSON logs when JSON logging is enabled.
+// If nil, logs will go to stdout.
+// SetJSONLogWriter sets a destination for JSON logs when JSON logging is enabled.
+// If nil, logs will go to stdout.
+func SetJSONLogWriter(w io.Writer) { jsonLogWriter = w }
+
+func logJSON(label, payload string) {
+	if !enableJSONLogging {
+		return
+	}
+	if jsonLogWriter != nil {
+		fmt.Fprintf(jsonLogWriter, "%s: %s\n", label, payload)
+		return
+	}
+	fmt.Printf("%s: %s\n", label, payload)
+}
+
+// Error codes reported by the native layer in JSON envelopes
+const (
+	ErrCodeUnknown           = -1 // generic / uncategorized error
+	ErrCodeJSONSerialization = -2 // JSON serialization failed
+	ErrCodeNotFound          = -3 // single-plugin not found for given identifiers
+)
+
+// Timeout configuration (seconds). These feed through to the native layer.
+// Use small values to speed up development scans; larger for stability.
+func SetPresetLoadingTimeout(seconds float64) { C.SetPresetLoadingTimeout(C.double(seconds)) }
+func SetProcessUpdateTimeout(seconds float64) { C.SetProcessUpdateTimeout(C.double(seconds)) }
+func SetTotalTimeout(seconds float64)         { C.SetTotalTimeout(C.double(seconds)) }
 
 // PluginInfo represents basic AudioUnit plugin information (quick scan)
 type PluginInfo struct {
@@ -51,7 +101,8 @@ type QuickScanResponse struct {
 }
 
 // PluginResult represents the response from introspection (like devices pattern)
-type PluginResult struct {
+// pluginResult is the uniform envelope returned by native JSON (unexported)
+type pluginResult struct {
 	Success             bool      `json:"success"`
 	Plugins             []*Plugin `json:"plugins"`
 	PluginCount         int       `json:"pluginCount"`
@@ -97,6 +148,9 @@ type Parameter struct {
 type Plugins []Plugin
 
 // List returns a quick enumeration of all available AudioUnit plugins (no parameters)
+// List performs a fast enumeration of installed AudioUnit plugins without
+// instantiating them. It returns PluginInfo entries that can be filtered and
+// later introspected individually.
 func List() (PluginInfos, error) {
 	cPluginList := C.QuickScanAudioUnits()
 	if cPluginList == nil {
@@ -107,9 +161,7 @@ func List() (PluginInfos, error) {
 	jsonData := C.GoString(cPluginList)
 
 	// JSON logging when enabled (follows devices pattern)
-	if enableJSONLogging {
-		fmt.Printf("🔍 Plugin List JSON: %s\n", jsonData)
-	}
+	logJSON("QuickScan", jsonData)
 
 	var response QuickScanResponse
 	if err := json.Unmarshal([]byte(jsonData), &response); err != nil {
@@ -387,18 +439,35 @@ func IntrospectFromInfo(plugin PluginInfo) (Plugin, error) {
 }
 */
 
-// introspect is the internal function (non-exported)
-func introspect(pluginType, subtype, manufacturerID string) ([]*Plugin, error) {
-	cType := C.CString(pluginType)
-	defer C.free(unsafe.Pointer(cType))
+// cStringOrNil returns nil for empty strings (used to signal suite mode for name)
+func cStringOrNil(s string) *C.char {
+	if s == "" {
+		return nil
+	}
+	return C.CString(s)
+}
 
-	cSubtype := C.CString(subtype)
-	defer C.free(unsafe.Pointer(cSubtype))
+// introspect is the omnipotent internal function: name == "" ⇒ suite; name set ⇒ single
+func introspect(pluginType, subtype, manufacturerID, name string) ([]*Plugin, error) {
+	cType := cStringOrNil(pluginType)
+	cSubtype := cStringOrNil(subtype)
+	cMan := cStringOrNil(manufacturerID)
+	cName := cStringOrNil(name)
 
-	cManufacturerID := C.CString(manufacturerID)
-	defer C.free(unsafe.Pointer(cManufacturerID))
+	if cType != nil {
+		defer C.free(unsafe.Pointer(cType))
+	}
+	if cSubtype != nil {
+		defer C.free(unsafe.Pointer(cSubtype))
+	}
+	if cMan != nil {
+		defer C.free(unsafe.Pointer(cMan))
+	}
+	if cName != nil {
+		defer C.free(unsafe.Pointer(cName))
+	}
 
-	cResult := C.IntrospectAudioUnits(cType, cSubtype, cManufacturerID)
+	cResult := C.IntrospectAudioUnits(cType, cSubtype, cMan, cName)
 	if cResult == nil {
 		return nil, fmt.Errorf("failed to introspect plugins")
 	}
@@ -407,12 +476,10 @@ func introspect(pluginType, subtype, manufacturerID string) ([]*Plugin, error) {
 	jsonData := C.GoString(cResult)
 
 	// JSON logging when enabled
-	if enableJSONLogging {
-		fmt.Printf("🔍 IntrospectWithTimeout JSON: %s\n", jsonData)
-	}
+	logJSON(fmt.Sprintf("Introspect[%s:%s:%s:%s]", pluginType, subtype, manufacturerID, name), jsonData)
 
-	// Parse JSON into PluginResult struct (like devices pattern)
-	var result PluginResult
+	// Parse JSON into pluginResult struct (like devices pattern)
+	var result pluginResult
 	if err := json.Unmarshal([]byte(jsonData), &result); err != nil {
 		return nil, fmt.Errorf("failed to parse plugin result data: %v", err)
 	}
@@ -429,25 +496,29 @@ func introspect(pluginType, subtype, manufacturerID string) ([]*Plugin, error) {
 	return result.Plugins, nil
 }
 
-// Introspect method on PluginInfo - returns single Plugin
+// IntrospectSuite returns all plugins for the triplet (0..N)
+func (pi PluginInfo) IntrospectSuite() ([]*Plugin, error) {
+	return introspect(pi.Type, pi.Subtype, pi.ManufacturerID, "")
+}
+
+// Introspect returns exactly one plugin for the quadruplet; errors otherwise
 func (pi PluginInfo) Introspect() (*Plugin, error) {
-	results, err := introspect(pi.Type, pi.Subtype, pi.ManufacturerID)
+	results, err := introspect(pi.Type, pi.Subtype, pi.ManufacturerID, pi.Name)
 	if err != nil {
-		return &Plugin{}, err
+		return nil, err
 	}
-
 	if len(results) != 1 {
-		return &Plugin{}, fmt.Errorf("expected 1 plugin, got %d for %s:%s:%s",
-			len(results), pi.Type, pi.Subtype, pi.ManufacturerID)
+		return nil, fmt.Errorf("expected 1 plugin, got %d for %s:%s:%s:%s",
+			len(results), pi.Type, pi.Subtype, pi.ManufacturerID, pi.Name)
 	}
-
 	return results[0], nil
 }
 
 // Introspect method on PluginInfos - returns slice of Plugins
+// Introspect maps PluginInfo.Introspect() over the slice, returning fully
+// populated Plugin objects with parameter metadata. Fail-fast on first error.
 func (infos PluginInfos) Introspect() ([]*Plugin, error) {
 	var allPlugins []*Plugin
-
 	for _, info := range infos {
 		plugin, err := info.Introspect()
 		if err != nil {
@@ -455,12 +526,5 @@ func (infos PluginInfos) Introspect() ([]*Plugin, error) {
 		}
 		allPlugins = append(allPlugins, plugin)
 	}
-
 	return allPlugins, nil
-}
-
-// Introspect uses the new timeout-based function
-// Returns an array of plugins matching the filter criteria
-func Introspect(pluginType, subtype, manufacturerID string) ([]*Plugin, error) {
-	return introspect(pluginType, subtype, manufacturerID)
 }

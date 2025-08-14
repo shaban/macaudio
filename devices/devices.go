@@ -18,15 +18,32 @@ import "C"
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"unsafe"
 )
 
 // JSON logging control
 var enableJSONLogging bool = false
+var jsonLogWriter io.Writer
 
 // SetJSONLogging enables or disables JSON logging for debugging
 func SetJSONLogging(enable bool) {
 	enableJSONLogging = enable
+}
+
+// SetJSONLogWriter sets a destination for JSON logs when JSON logging is enabled.
+// If nil, logs will go to stdout.
+func SetJSONLogWriter(w io.Writer) { jsonLogWriter = w }
+
+func logJSON(label, payload string) {
+	if !enableJSONLogging {
+		return
+	}
+	if jsonLogWriter != nil {
+		fmt.Fprintf(jsonLogWriter, "%s: %s\n", label, payload)
+		return
+	}
+	fmt.Printf("%s: %s\n", label, payload)
 }
 
 // Device represents the common properties of any device
@@ -306,11 +323,12 @@ func (devices MIDIDevices) ByModel(model string) MIDIDevices {
 
 // MIDIDeviceResult represents the result for MIDI devices
 type MIDIDeviceResult struct {
-	Success     bool         `json:"success"`
-	Error       string       `json:"error,omitempty"`
-	ErrorCode   int          `json:"errorCode,omitempty"`
-	Devices     []MIDIDevice `json:"devices"`
-	DeviceCount int          `json:"deviceCount"`
+	Success             bool         `json:"success"`
+	Error               string       `json:"error,omitempty"`
+	ErrorCode           int          `json:"errorCode,omitempty"`
+	Devices             []MIDIDevice `json:"devices"`
+	DeviceCount         int          `json:"deviceCount"`
+	TotalDevicesScanned int          `json:"totalDevicesScanned,omitempty"`
 }
 
 // AudioDeviceResult represents the result for audio devices
@@ -331,9 +349,7 @@ func GetAudio() (AudioDevices, error) {
 	jsonStr := C.GoString(result)
 
 	// JSON logging when enabled
-	if enableJSONLogging {
-		fmt.Printf("🔍 Audio Devices JSON: %s\n", jsonStr)
-	}
+	logJSON("AudioDevices", jsonStr)
 
 	var deviceResult AudioDeviceResult
 	if err := json.Unmarshal([]byte(jsonStr), &deviceResult); err != nil {
@@ -355,56 +371,20 @@ func GetMIDI() (MIDIDevices, error) {
 	jsonData := C.GoString(cDeviceList)
 
 	// JSON logging when enabled
-	if enableJSONLogging {
-		fmt.Printf("🔍 MIDI Devices JSON: %s\n", jsonData)
-	}
+	logJSON("MIDIDevices", jsonData)
 
-	// Parse JSON response to check for success/error structure like audio devices
-	var response map[string]interface{}
-	if err := json.Unmarshal([]byte(jsonData), &response); err != nil {
+	// Parse JSON response consistently with audio devices
+	var deviceResult MIDIDeviceResult
+	if err := json.Unmarshal([]byte(jsonData), &deviceResult); err != nil {
 		return nil, fmt.Errorf("failed to parse MIDI response: %v", err)
 	}
-
-	// Check if it's an error response
-	if success, exists := response["success"]; exists {
-		if successBool, ok := success.(bool); ok && !successBool {
-			errorMsg := "Unknown MIDI error"
-			if errorVal, exists := response["error"]; exists {
-				if errorStr, ok := errorVal.(string); ok {
-					errorMsg = errorStr
-				}
-			}
-			return nil, fmt.Errorf("MIDI enumeration failed: %s", errorMsg)
+	if !deviceResult.Success {
+		if deviceResult.Error == "" {
+			deviceResult.Error = "unknown error"
 		}
-
-		// It's a success response, extract devices array
-		if devicesVal, exists := response["devices"]; exists {
-			if devicesArray, ok := devicesVal.([]interface{}); ok {
-				// Convert back to JSON for parsing into MIDIDevice structs
-				devicesJSON, err := json.Marshal(devicesArray)
-				if err != nil {
-					return nil, fmt.Errorf("failed to re-marshal MIDI devices: %v", err)
-				}
-
-				var devices []MIDIDevice
-				if err := json.Unmarshal(devicesJSON, &devices); err != nil {
-					return nil, fmt.Errorf("failed to parse MIDI devices: %v", err)
-				}
-
-				return devices, nil
-			}
-		}
-
-		return nil, fmt.Errorf("invalid MIDI response structure")
+		return nil, fmt.Errorf("MIDI enumeration failed (%d): %s", deviceResult.ErrorCode, deviceResult.Error)
 	}
-
-	// Fallback: try to parse as direct array (for backward compatibility)
-	var devices []MIDIDevice
-	if err := json.Unmarshal([]byte(jsonData), &devices); err != nil {
-		return nil, fmt.Errorf("failed to parse MIDI devices: %v", err)
-	}
-
-	return MIDIDevices(devices), nil
+	return MIDIDevices(deviceResult.Devices), nil
 }
 
 // GetAudioDeviceCount returns the number of audio devices without full enumeration
