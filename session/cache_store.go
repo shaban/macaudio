@@ -14,11 +14,14 @@ import (
 	"github.com/shaban/macaudio/plugins"
 )
 
+// Versions for on-disk files so future migrations can co-exist safely.
 const (
 	indexVersion   = "1.0-index"
 	detailsVersion = "1.0-details"
 )
 
+// indexEntry keeps a minimal quick view of a plugin. It's stored in index.json
+// and used for fast startup and change detection without full introspection.
 type indexEntry struct {
 	Key            string    `json:"key"`
 	Type           string    `json:"type"`
@@ -30,12 +33,16 @@ type indexEntry struct {
 	LastSeenAt     time.Time `json:"lastSeenAt"`
 }
 
+// indexFile is the on-disk structure for index.json
 type indexFile struct {
 	Version   string                `json:"version"`
 	UpdatedAt time.Time             `json:"updatedAt"`
 	Entries   map[string]indexEntry `json:"entries"`
 }
 
+// detailsFile is the on-disk structure for a single plugin details file.
+// It mirrors the detailed Plugin object and associates it to a checksum of
+// the quick info for freshness validation.
 type detailsFile struct {
 	Version          string          `json:"version"`
 	LastIntrospected time.Time       `json:"lastIntrospected"`
@@ -53,6 +60,7 @@ func checksumQuick(info plugins.PluginInfo) string {
 	return hex.EncodeToString(h[:])
 }
 
+// getIndexPaths returns the index.json path and ensures details/ exists.
 func getIndexPaths() (string, string, error) {
 	dir, err := getPluginCacheDir()
 	if err != nil {
@@ -65,6 +73,7 @@ func getIndexPaths() (string, string, error) {
 	return filepath.Join(dir, "index.json"), detailsDir, nil
 }
 
+// loadIndex reads index.json if present; otherwise returns an empty index.
 func loadIndex() (*indexFile, error) {
 	idxPath, _, err := getIndexPaths()
 	if err != nil {
@@ -87,6 +96,7 @@ func loadIndex() (*indexFile, error) {
 	return &idx, nil
 }
 
+// saveIndex atomically writes index.json to avoid partial writes.
 func saveIndex(idx *indexFile) error {
 	idxPath, _, err := getIndexPaths()
 	if err != nil {
@@ -105,11 +115,13 @@ func saveIndex(idx *indexFile) error {
 	return os.Rename(tmp, idxPath)
 }
 
+// detailFileName hashes the quadruplet key to a stable filename.
 func detailFileName(key string) string {
 	sum := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(sum[:]) + ".json"
 }
 
+// readDetails reads a plugin details file and returns the plugin and stored checksum.
 func readDetails(key string) (*plugins.Plugin, string, error) {
 	_, detailsDir, err := getIndexPaths()
 	if err != nil {
@@ -130,6 +142,7 @@ func readDetails(key string) (*plugins.Plugin, string, error) {
 	return df.Plugin, df.Checksum, nil
 }
 
+// writeDetails atomically persists a plugin details file.
 func writeDetails(key, checksum string, pl *plugins.Plugin) error {
 	_, detailsDir, err := getIndexPaths()
 	if err != nil {

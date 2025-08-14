@@ -16,42 +16,20 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version-file: 'go.mod'
+          check-latest: true
 
-      - name: Cache Go build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+      - name: Go version
+        run: go version
 
       - name: Go env
         run: go env
 
-      - name: Vet (devices)
-        run: go vet ./devices
+      - name: Vet (all)
+        run: go vet ./...
 
-      - name: Test (devices)
-        run: go test -v ./devices
+      - name: Test (all)
+        run: go test -v ./... -timeout 20m
 
-      - name: Test with race detector (devices)
-        run: go test -race -v ./devices
-
-      - name: Vet (plugins)
-        run: go vet ./plugins
-
-      - name: Test (plugins)
-        run: go test -v ./plugins
-
-      - name: Test with race detector (plugins)
-        run: go test -race -v ./plugins
-
-      - name: Vet (session)
-        run: go vet ./session
-
-      - name: Test (session)
-        run: go test -v ./session -timeout 15m
-
-      - name: Test with race detector (session)
-        run: go test -race -v ./session -timeout 15m
+      - name: Test with race detector (all)
+        run: go test -race -v ./... -timeout 20m

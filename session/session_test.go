@@ -9,11 +9,12 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"github.com/shaban/macaudio/plugins"
 	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/shaban/macaudio/plugins"
 )
 
 func TestMain(m *testing.M) {
@@ -324,7 +325,9 @@ func TestRefreshQuickCleansStaleDetails(t *testing.T) {
 	// Create a fake key, insert it into the in-memory index snapshot to simulate a previously-seen plugin
 	fakeKey := "aufx:FAKE:ACME:Nonexistent Plugin"
 	sess.idxMu.Lock()
-	if sess.idxSnap == nil { sess.idxSnap = &indexFile{Version: indexVersion, Entries: map[string]indexEntry{}} }
+	if sess.idxSnap == nil {
+		sess.idxSnap = &indexFile{Version: indexVersion, Entries: map[string]indexEntry{}}
+	}
 	sess.idxSnap.Entries[fakeKey] = indexEntry{Key: fakeKey, Type: "aufx", Subtype: "FAKE", ManufacturerID: "ACME", Name: "Nonexistent Plugin", Category: "Effect", Checksum: "deadbeef", LastSeenAt: time.Now()}
 	_ = saveIndex(sess.idxSnap)
 	sess.idxMu.Unlock()
@@ -335,7 +338,9 @@ func TestRefreshQuickCleansStaleDetails(t *testing.T) {
 	}
 	// Sanity: file should exist now
 	_, detailsDir, err := getIndexPaths()
-	if err != nil { t.Fatalf("getIndexPaths: %v", err) }
+	if err != nil {
+		t.Fatalf("getIndexPaths: %v", err)
+	}
 	path := filepath.Join(detailsDir, detailFileName(fakeKey))
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("expected fake details file to exist: %v", err)

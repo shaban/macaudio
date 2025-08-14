@@ -8,12 +8,13 @@ import (
 	"github.com/shaban/macaudio/avaudio/engine"
 	"github.com/shaban/macaudio/avaudio/sourcenode"
 	"github.com/shaban/macaudio/engine/analyze"
+	"github.com/shaban/macaudio/internal/testutil"
 )
 
 func TestMonoToStereoMasterConnection(t *testing.T) {
 	t.Log("Testing MonoToStereoChannel master connection/disconnection...")
 
-	eng, err := engine.New(engine.DefaultAudioSpec())
+	eng, err := engine.New(testutil.SmallSpec())
 	if err != nil || eng == nil {
 		t.Skip("Cannot create AVAudioEngine for testing")
 	}
@@ -58,12 +59,12 @@ func TestMonoToStereoMasterConnection(t *testing.T) {
 
 	t.Log("✓ Successfully connected channel to master")
 
-	// Test that connecting again fails
+	// Test that connecting again is idempotent (no error)
 	err = monoChannel.ConnectToMaster(eng)
-	if err == nil {
-		t.Error("Expected error when connecting already connected channel")
+	if err != nil {
+		t.Errorf("Idempotent connect should not error: %v", err)
 	} else {
-		t.Logf("✓ Correctly rejected duplicate connection: %v", err)
+		t.Log("✓ Duplicate connect is idempotent (no-op)")
 	}
 
 	// Test DisconnectFromMaster
@@ -79,19 +80,19 @@ func TestMonoToStereoMasterConnection(t *testing.T) {
 
 	t.Log("✓ Successfully disconnected channel from master")
 
-	// Test that disconnecting again fails
+	// Test that disconnecting again is idempotent (no error)
 	err = monoChannel.DisconnectFromMaster(eng)
-	if err == nil {
-		t.Error("Expected error when disconnecting not connected channel")
+	if err != nil {
+		t.Errorf("Idempotent disconnect should not error: %v", err)
 	} else {
-		t.Logf("✓ Correctly rejected duplicate disconnection: %v", err)
+		t.Log("✓ Duplicate disconnect is idempotent (no-op)")
 	}
 }
 
 func TestMasterConnectionWithRealAudio(t *testing.T) {
 	t.Log("Testing master connection with real audio signal...")
 
-	eng, err := engine.New(engine.DefaultAudioSpec())
+	eng, err := engine.New(testutil.SmallSpec())
 	if err != nil || eng == nil {
 		t.Skip("Cannot create AVAudioEngine for testing")
 	}
@@ -150,7 +151,8 @@ func TestMasterConnectionWithRealAudio(t *testing.T) {
 
 	t.Log("✓ Connected channel to master output")
 
-	// Start engine and test audio processing
+	// Start engine and test audio processing (mute main mixer to avoid audible output)
+	testutil.MuteMainMixer(t, eng)
 	err = eng.Start()
 	if err != nil {
 		t.Fatalf("Failed to start engine: %v", err)
@@ -162,8 +164,9 @@ func TestMasterConnectionWithRealAudio(t *testing.T) {
 		}
 	}()
 
-	// Let audio process for a moment
-	time.Sleep(100 * time.Millisecond)
+	// Quick tap-based signal check
+	mm, _ := eng.MainMixerNode()
+	testutil.AssertRMSAbove(t, eng, mm, 0, 0.0005, 200*time.Millisecond)
 
 	// Verify audio is flowing through the master connection
 	analysisConfig := analyze.DefaultAnalysisConfig()
@@ -211,7 +214,7 @@ func TestMasterConnectionWithRealAudio(t *testing.T) {
 func TestMultipleChannelMasterConnections(t *testing.T) {
 	t.Log("Testing multiple channels connecting to master...")
 
-	eng, err := engine.New(engine.DefaultAudioSpec())
+	eng, err := engine.New(testutil.SmallSpec())
 	if err != nil || eng == nil {
 		t.Skip("Cannot create AVAudioEngine for testing")
 	}

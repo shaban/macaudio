@@ -1,5 +1,6 @@
 #import <AVFoundation/AVFoundation.h>
 #import <Foundation/Foundation.h>
+#import <AudioToolbox/AudioToolbox.h>
 
 // Result structures for functions that return pointers
 typedef struct {
@@ -270,4 +271,194 @@ const char* audiomixer_release(void* mixerPtr) {
         NSString* errorMsg = [NSString stringWithFormat:@"Failed to release mixer: %@", exception.reason];
         return [errorMsg UTF8String];
     }
+}
+
+// Per-connection (source -> mixer bus) controls using AVAudioMixingDestination.
+// These allow controlling the gain/pan of a specific input bus as seen from the source.
+
+static AVAudioMixingDestination* _getDestinationFor(void* sourcePtr, void* mixerPtr, int destBus, const char** err) {
+    if (err) { *err = NULL; }
+    if (!sourcePtr) { if (err) *err = "Source node pointer is null"; return nil; }
+    if (!mixerPtr)  { if (err) *err = "Mixer pointer is null"; return nil; }
+    if (destBus < 0) { if (err) *err = "Destination bus cannot be negative"; return nil; }
+
+    AVAudioNode* sourceNode = (__bridge AVAudioNode*)sourcePtr;
+    AVAudioMixerNode* mixer = (__bridge AVAudioMixerNode*)mixerPtr;
+
+    if (![sourceNode conformsToProtocol:@protocol(AVAudioMixing)]) {
+        if (err) *err = "Source node does not support AVAudioMixing (no per-connection control)";
+        return nil;
+    }
+
+    id<AVAudioMixing> mixingSource = (id<AVAudioMixing>)sourceNode;
+    if (![mixingSource respondsToSelector:@selector(destinationForMixer:bus:)]) {
+        if (err) *err = "AVAudioMixingDestination API not available";
+        return nil;
+    }
+
+    AVAudioMixingDestination* dest = [mixingSource destinationForMixer:mixer bus:destBus];
+    if (!dest) {
+        NSString* msg = [NSString stringWithFormat:@"No destination for mixer %@ bus %d", mixer, destBus];
+        if (err) *err = [msg UTF8String];
+        return nil;
+    }
+    return dest;
+}
+
+const char* audiomixer_set_input_volume_for_connection(void* sourcePtr, void* mixerPtr, int destBus, float volume) {
+    if (volume < 0.0f || volume > 1.0f) {
+        return "Volume must be between 0.0 and 1.0";
+    }
+    const char* e = NULL;
+    AVAudioMixingDestination* dest = _getDestinationFor(sourcePtr, mixerPtr, destBus, &e);
+    if (!dest) { return e; }
+    @try {
+        dest.volume = volume;
+        NSLog(@"Set per-connection volume %.2f on bus %d", volume, destBus);
+        return NULL;
+    } @catch (NSException* ex) {
+        NSString* msg = [NSString stringWithFormat:@"Failed to set per-connection volume: %@", ex.reason];
+        return [msg UTF8String];
+    }
+}
+
+const char* audiomixer_get_input_volume_for_connection(void* sourcePtr, void* mixerPtr, int destBus, float* result) {
+    if (!result) { return "Result pointer is null"; }
+    const char* e = NULL;
+    AVAudioMixingDestination* dest = _getDestinationFor(sourcePtr, mixerPtr, destBus, &e);
+    if (!dest) { return e; }
+    @try {
+        *result = dest.volume;
+        return NULL;
+    } @catch (NSException* ex) {
+        NSString* msg = [NSString stringWithFormat:@"Failed to get per-connection volume: %@", ex.reason];
+        return [msg UTF8String];
+    }
+}
+
+const char* audiomixer_set_input_pan_for_connection(void* sourcePtr, void* mixerPtr, int destBus, float pan) {
+    if (pan < -1.0f || pan > 1.0f) {
+        return "Pan must be between -1.0 and 1.0";
+    }
+    const char* e = NULL;
+    AVAudioMixingDestination* dest = _getDestinationFor(sourcePtr, mixerPtr, destBus, &e);
+    if (!dest) { return e; }
+    @try {
+        dest.pan = pan;
+        NSLog(@"Set per-connection pan %.2f on bus %d", pan, destBus);
+        return NULL;
+    } @catch (NSException* ex) {
+        NSString* msg = [NSString stringWithFormat:@"Failed to set per-connection pan: %@", ex.reason];
+        return [msg UTF8String];
+    }
+}
+
+const char* audiomixer_get_input_pan_for_connection(void* sourcePtr, void* mixerPtr, int destBus, float* result) {
+    if (!result) { return "Result pointer is null"; }
+    const char* e = NULL;
+    AVAudioMixingDestination* dest = _getDestinationFor(sourcePtr, mixerPtr, destBus, &e);
+    if (!dest) { return e; }
+    @try {
+        *result = dest.pan;
+        return NULL;
+    } @catch (NSException* ex) {
+        NSString* msg = [NSString stringWithFormat:@"Failed to get per-connection pan: %@", ex.reason];
+        return [msg UTF8String];
+    }
+}
+
+// -------------------------
+// Generic node helpers
+// -------------------------
+const char* audionode_release(void* nodePtr) {
+    if (!nodePtr) { return NULL; }
+    @try {
+        // ARC will manage lifetime; clearing strong refs on Go side suffices.
+        // We keep this for API symmetry.
+        return NULL;
+    } @catch (NSException* ex) {
+        NSString* msg = [NSString stringWithFormat:@"Failed to release node: %@", ex.reason];
+        return [msg UTF8String];
+    }
+}
+
+// -------------------------
+// Matrix Mixer (invert stage)
+// -------------------------
+static AVAudioUnit* _instantiateComponent(AudioComponentDescription desc, const char** err) {
+    __block AVAudioUnit* unit = nil;
+    __block NSString* errorMsg = nil;
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+    [AVAudioUnit instantiateWithComponentDescription:desc options:0 completionHandler:^(AVAudioUnit * _Nullable au, NSError * _Nullable error) {
+        if (error) {
+            errorMsg = [NSString stringWithFormat:@"Instantiate failed: %@", error.localizedDescription];
+        } else {
+            unit = au;
+        }
+        dispatch_semaphore_signal(sema);
+    }];
+    // Wait up to 2 seconds
+    dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC));
+    if (dispatch_semaphore_wait(sema, timeout) != 0) {
+        if (err) *err = "Timed out instantiating audio unit";
+        return nil;
+    }
+    if (!unit && errorMsg && err) { *err = [errorMsg UTF8String]; }
+    return unit;
+}
+
+AudioNodeResult matrixmixer_create(void) {
+    AudioComponentDescription desc;
+    desc.componentType = kAudioUnitType_Mixer;           // 'aumx'
+    desc.componentSubType = kAudioUnitSubType_MatrixMixer; // 'mxmx'
+    desc.componentManufacturer = kAudioUnitManufacturer_Apple; // 'appl'
+    desc.componentFlags = 0;
+    desc.componentFlagsMask = 0;
+    const char* e = NULL;
+    AVAudioUnit* unit = _instantiateComponent(desc, &e);
+    if (!unit) {
+        return (AudioNodeResult){NULL, e ? e : "Failed to create MatrixMixer"};
+    }
+    return (AudioNodeResult){(__bridge void*)unit, NULL};
+}
+
+// Configure the matrix mixer to invert polarity: diagonal gains set to -1.0
+// The matrix size is inputChannels x outputChannels.
+const char* matrixmixer_configure_invert(void* unitPtr) {
+    if (!unitPtr) { return "Matrix mixer pointer is null"; }
+    AVAudioUnit* unit = (__bridge AVAudioUnit*)unitPtr;
+    @try {
+        AVAudioFormat* inFmt = [unit AUAudioUnit] ? nil : nil; // placeholder to satisfy compiler
+    } @catch (NSException* ex) {
+        // continue
+    }
+    // Query formats directly from node
+    AVAudioNode* node = (__bridge AVAudioNode*)unitPtr;
+    AVAudioFormat* inFmt = [node inputFormatForBus:0];
+    AVAudioFormat* outFmt = [node outputFormatForBus:0];
+    if (!inFmt || !outFmt) { return "Matrix mixer formats unavailable"; }
+    UInt32 inCh = (UInt32)inFmt.channelCount;
+    UInt32 outCh = (UInt32)outFmt.channelCount;
+    if (inCh == 0 || outCh == 0) { return "Zero channel count on matrix mixer"; }
+
+    AudioUnit au = unit.audioUnit;
+    if (au == NULL) { return "Underlying AudioUnit missing"; }
+
+    // Build matrix with -1 on diagonal
+    UInt32 count = inCh * outCh;
+    Float32* gains = (Float32*)calloc(count, sizeof(Float32));
+    if (!gains) { return "alloc failed"; }
+    UInt32 min = (inCh < outCh) ? inCh : outCh;
+    for (UInt32 i = 0; i < min; i++) {
+        // Row-major: out channel major or in? Apple docs: levels are [outChan][inChan].
+        // We'll fill gains[out*inCh + in] with -1 on diagonal.
+        gains[i*inCh + i] = -1.0f;
+    }
+    OSStatus st = AudioUnitSetProperty(au, kAudioUnitProperty_MatrixLevels, kAudioUnitScope_Global, 0, gains, count * sizeof(Float32));
+    free(gains);
+    if (st != noErr) {
+        NSString* msg = [NSString stringWithFormat:@"AudioUnitSetProperty(MATRIX_LEVELS) failed: %d", (int)st];
+        return [msg UTF8String];
+    }
+    return NULL;
 }

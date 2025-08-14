@@ -89,23 +89,23 @@ const (
 
 // AudioSpec captures session-level audio preferences.
 // Note:
-//  - PreferredSampleRate is a target; actual device/sample rate may differ.
-//  - BufferSize is a hint and may be adjusted at runtime.
-//  - ChannelCount and BitDepth reflect legacy/global settings; engines typically run 32-bit float stereo internally.
-//    Deprecated: these are not enforced globally and may be removed in a future release.
+//   - PreferredSampleRate is a target; actual device/sample rate may differ.
+//   - BufferSize is a hint and may be adjusted at runtime.
+//   - ChannelCount and BitDepth reflect legacy/global settings; engines typically run 32-bit float stereo internally.
+//     Deprecated: these are not enforced globally and may be removed in a future release.
 type AudioSpec struct {
 	// Preferred target sample rate for the session; devices may override.
-	PreferredSampleRate float64      `json:"preferred_sample_rate,omitempty"`
+	PreferredSampleRate float64 `json:"preferred_sample_rate,omitempty"`
 	// Coarse latency preference; maps to buffer sizes per backend.
-	LatencyHint         LatencyClass `json:"latency_hint,omitempty"`
+	LatencyHint LatencyClass `json:"latency_hint,omitempty"`
 
 	// Deprecated: Global channel count is not a session invariant. Use per-node formats.
 	ChannelCount int `json:"channel_count,omitempty"`
 	// Deprecated: Engines use 32-bit float internally; keep for I/O contexts only.
-	BitDepth     int `json:"bit_depth,omitempty"`
+	BitDepth int `json:"bit_depth,omitempty"`
 
 	// Optional explicit buffer size hint (frames). Overrides LatencyHint if set > 0.
-	BufferSize   int `json:"buffer_size,omitempty"`
+	BufferSize int `json:"buffer_size,omitempty"`
 }
 
 // DeviceChange represents a device change event with async scan status
@@ -235,18 +235,26 @@ type Options struct {
 	// When true, run a quick scan to populate index on start
 	RefreshQuickOnStart bool
 	// Warm predicate and concurrency; applied after quick refresh if set
-	WarmSelector   func(plugins.PluginInfo) bool
+	WarmSelector    func(plugins.PluginInfo) bool
 	WarmConcurrency int
 }
 
 // NewSessionWithOptions creates a session with advanced options.
 func NewSessionWithOptions(spec AudioSpec, opt Options) (*Session, error) {
 	s, err := NewSession(spec)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	// Apply timeouts if provided
-	if opt.PresetLoadingTimeout > 0 { plugins.SetPresetLoadingTimeout(opt.PresetLoadingTimeout) }
-	if opt.ProcessUpdateTimeout > 0 { plugins.SetProcessUpdateTimeout(opt.ProcessUpdateTimeout) }
-	if opt.TotalIntrospectTimeout > 0 { plugins.SetTotalTimeout(opt.TotalIntrospectTimeout) }
+	if opt.PresetLoadingTimeout > 0 {
+		plugins.SetPresetLoadingTimeout(opt.PresetLoadingTimeout)
+	}
+	if opt.ProcessUpdateTimeout > 0 {
+		plugins.SetProcessUpdateTimeout(opt.ProcessUpdateTimeout)
+	}
+	if opt.TotalIntrospectTimeout > 0 {
+		plugins.SetTotalTimeout(opt.TotalIntrospectTimeout)
+	}
 	// Optionally refresh quick index and warm details asynchronously
 	if opt.RefreshQuickOnStart {
 		go func() {
@@ -853,7 +861,9 @@ func (s *Session) Close() error {
 // QuickPlugins returns the cached quick index; runs a quick scan when empty/outdated and persists it.
 func (s *Session) QuickPlugins() (plugins.PluginInfos, error) {
 	start := time.Now()
-	if s.hook != nil { s.hook.OnQuickScanStart() }
+	if s.hook != nil {
+		s.hook.OnQuickScanStart()
+	}
 	s.idxMu.RLock()
 	idx := s.idxSnap
 	s.idxMu.RUnlock()
@@ -865,14 +875,18 @@ func (s *Session) QuickPlugins() (plugins.PluginInfos, error) {
 				Name: e.Name, ManufacturerID: e.ManufacturerID, Type: e.Type, Subtype: e.Subtype, Category: e.Category,
 			})
 		}
-		if s.hook != nil { s.hook.OnQuickScanDone(time.Since(start), len(infos), false) }
+		if s.hook != nil {
+			s.hook.OnQuickScanDone(time.Since(start), len(infos), false)
+		}
 		return infos, nil
 	}
 
 	// Populate via quick scan
 	infos, err := plugins.List()
 	if err != nil {
-		if s.hook != nil { s.hook.OnQuickScanDone(time.Since(start), 0, true) }
+		if s.hook != nil {
+			s.hook.OnQuickScanDone(time.Since(start), 0, true)
+		}
 		return nil, err
 	}
 	// Persist index
@@ -888,7 +902,9 @@ func (s *Session) QuickPlugins() (plugins.PluginInfos, error) {
 	s.idxMu.Lock()
 	s.idxSnap = newIdx
 	s.idxMu.Unlock()
-	if s.hook != nil { s.hook.OnQuickScanDone(time.Since(start), len(infos), true) }
+	if s.hook != nil {
+		s.hook.OnQuickScanDone(time.Since(start), len(infos), true)
+	}
 	return infos, nil
 }
 
@@ -912,18 +928,26 @@ func (s *Session) Plugin(t, st, man, name string) (*plugins.Plugin, error) {
 	}
 	if wantChecksum != "" {
 		if p, chk, err := readDetails(key); err == nil && chk == wantChecksum {
-			if s.hook != nil { s.hook.OnCacheHit(key) }
+			if s.hook != nil {
+				s.hook.OnCacheHit(key)
+			}
 			s.setInFlightResult(key, p, nil)
 			return p, nil
 		}
 	}
-	if s.hook != nil { s.hook.OnCacheMiss(key) }
+	if s.hook != nil {
+		s.hook.OnCacheMiss(key)
+	}
 	// Introspect single
-	if s.hook != nil { s.hook.OnDetailsFetchStart(key) }
+	if s.hook != nil {
+		s.hook.OnDetailsFetchStart(key)
+	}
 	t0 := time.Now()
 	infos, err := plugins.List()
 	if err != nil {
-		if s.hook != nil { s.hook.OnDetailsFetchDone(key, time.Since(t0), false) }
+		if s.hook != nil {
+			s.hook.OnDetailsFetchDone(key, time.Since(t0), false)
+		}
 		s.setInFlightResult(key, nil, err)
 		return nil, err
 	}
@@ -936,14 +960,18 @@ func (s *Session) Plugin(t, st, man, name string) (*plugins.Plugin, error) {
 		}
 	}
 	if target == nil {
-	err := fmt.Errorf("plugin not found: %s", key)
-	if s.hook != nil { s.hook.OnDetailsFetchDone(key, time.Since(t0), false) }
+		err := fmt.Errorf("plugin not found: %s", key)
+		if s.hook != nil {
+			s.hook.OnDetailsFetchDone(key, time.Since(t0), false)
+		}
 		s.setInFlightResult(key, nil, err)
 		return nil, err
 	}
 	p, err := target.Introspect()
 	if err != nil {
-	if s.hook != nil { s.hook.OnDetailsFetchDone(key, time.Since(t0), false) }
+		if s.hook != nil {
+			s.hook.OnDetailsFetchDone(key, time.Since(t0), false)
+		}
 		s.setInFlightResult(key, nil, err)
 		return nil, err
 	}
@@ -957,7 +985,9 @@ func (s *Session) Plugin(t, st, man, name string) (*plugins.Plugin, error) {
 	s.idxSnap.Entries[key] = indexEntry{Key: key, Type: t, Subtype: st, ManufacturerID: man, Name: name, Category: target.Category, Checksum: chk, LastSeenAt: time.Now()}
 	_ = saveIndex(s.idxSnap)
 	s.idxMu.Unlock()
-	if s.hook != nil { s.hook.OnDetailsFetchDone(key, time.Since(t0), true) }
+	if s.hook != nil {
+		s.hook.OnDetailsFetchDone(key, time.Since(t0), true)
+	}
 	s.setInFlightResult(key, p, nil)
 	return p, nil
 }
@@ -972,7 +1002,9 @@ type inflightCall struct {
 // joinInFlight registers/join an in-flight call. If already running, waits and returns its result.
 func (s *Session) joinInFlight(key string) (*plugins.Plugin, bool, error) {
 	s.inflightMu.Lock()
-	if s.inflight == nil { s.inflight = make(map[string]*inflightCall) }
+	if s.inflight == nil {
+		s.inflight = make(map[string]*inflightCall)
+	}
 	if c, ok := s.inflight[key]; ok {
 		// another call in-flight; wait
 		done := c.done
@@ -1011,11 +1043,15 @@ func (s *Session) setInFlightResult(key string, p *plugins.Plugin, err error) {
 type QuickDiff struct{ Added, Removed, Changed []string }
 
 func (s *Session) RefreshQuick() (QuickDiff, error) {
-	if s.hook != nil { s.hook.OnQuickScanStart() }
+	if s.hook != nil {
+		s.hook.OnQuickScanStart()
+	}
 	t0 := time.Now()
 	infos, err := plugins.List()
 	if err != nil {
-		if s.hook != nil { s.hook.OnQuickScanDone(time.Since(t0), 0, true) }
+		if s.hook != nil {
+			s.hook.OnQuickScanDone(time.Since(t0), 0, true)
+		}
 		return QuickDiff{}, err
 	}
 	// Build new index map
@@ -1078,9 +1114,15 @@ func (s *Session) Warm(selector func(plugins.PluginInfo) bool, concurrency int) 
 		return err
 	}
 	total := 0
-	for _, info := range infos { if selector == nil || selector(info) { total++ } }
+	for _, info := range infos {
+		if selector == nil || selector(info) {
+			total++
+		}
+	}
 	completed := 0
-	if s.hook != nil { s.hook.OnWarmProgress(total, completed) }
+	if s.hook != nil {
+		s.hook.OnWarmProgress(total, completed)
+	}
 	sem := make(chan struct{}, concurrency)
 	errCh := make(chan error, concurrency)
 	for _, info := range infos {
@@ -1095,7 +1137,9 @@ func (s *Session) Warm(selector func(plugins.PluginInfo) bool, concurrency int) 
 				errCh <- err
 			}
 			completed++
-			if s.hook != nil { s.hook.OnWarmProgress(total, completed) }
+			if s.hook != nil {
+				s.hook.OnWarmProgress(total, completed)
+			}
 		}()
 	}
 	for i := 0; i < cap(sem); i++ {

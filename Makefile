@@ -1,7 +1,7 @@
 # macaudio - macOS Audio/MIDI Library Makefile
 # Root makefile for the complete macaudio library
 
-.PHONY: test test-devices clean help info test-clean
+.PHONY: test test-devices clean help info test-clean test-all test-race test-audible
 
 # Default target - run comprehensive device tests
 all: test-devices
@@ -11,6 +11,24 @@ test-devices:
 	@echo "📱 Testing Complete Device Library Package..."
 	go test -v ./devices
 	@echo "✅ Device library tests complete"
+
+# Run all tests (fast defaults, muted and short where possible)
+test:
+	@echo "🧪 Running full test suite..."
+	go test ./...
+	@echo "✅ Tests complete"
+
+# Run all tests with race detector
+test-race:
+	@echo "🏁 Running test suite with -race..."
+	go test -race ./...
+	@echo "✅ Race tests complete"
+
+# Run audible tests explicitly (opt-in)
+test-audible:
+	@echo "🎧 Running audible tests (MACAUDIO_AUDIBLE=1)..."
+	MACAUDIO_AUDIBLE=1 go test -v ./avaudio -run TestAudible
+	@echo "✅ Audible tests complete"
 
 # Clean build cache
 clean:
@@ -37,6 +55,9 @@ help:
 	@echo "macaudio - macOS Audio/MIDI Library - Available Commands:"
 	@echo ""
 	@echo "🧪 Testing:"
+	@echo "  make test          - Run all tests (muted where possible)"
+	@echo "  make test-race     - Run all tests with the race detector"
+	@echo "  make test-audible  - Opt-in audible tests"
 	@echo "  make test-devices  - Test complete device library (default)"
 	@echo "  make test-clean    - Clean build and test devices"
 	@echo ""

@@ -8,6 +8,7 @@ import (
 	"github.com/shaban/macaudio/avaudio/engine"
 	"github.com/shaban/macaudio/avaudio/sourcenode"
 	"github.com/shaban/macaudio/engine/analyze"
+	"github.com/shaban/macaudio/internal/testutil"
 )
 
 func TestNewMonoToStereo(t *testing.T) {
@@ -281,7 +282,8 @@ func TestMonoToStereoRealAudioPanning(t *testing.T) {
 
 	t.Log("✓ Audio routing established: source → channel input → channel output → main mixer")
 
-	// Start the engine to begin audio processing
+	// Start the engine to begin audio processing (mute to avoid audible output)
+	testutil.MuteMainMixer(t, eng)
 	err = eng.Start()
 	if err != nil {
 		t.Fatalf("Failed to start engine: %v", err)
