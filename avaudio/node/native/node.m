@@ -373,8 +373,8 @@ const char* audiomixer_get_input_pan_for_connection(void* sourcePtr, void* mixer
 const char* audionode_release(void* nodePtr) {
     if (!nodePtr) { return NULL; }
     @try {
-        // ARC will manage lifetime; clearing strong refs on Go side suffices.
-        // We keep this for API symmetry.
+        CFBridgingRelease(nodePtr);
+        NSLog(@"Released generic AVAudioNode/Unit");
         return NULL;
     } @catch (NSException* ex) {
         NSString* msg = [NSString stringWithFormat:@"Failed to release node: %@", ex.reason];
@@ -419,7 +419,8 @@ AudioNodeResult matrixmixer_create(void) {
     if (!unit) {
         return (AudioNodeResult){NULL, e ? e : "Failed to create MatrixMixer"};
     }
-    return (AudioNodeResult){(__bridge void*)unit, NULL};
+    NSLog(@"Created AVAudioUnit(MatrixMixer): %@ class=%@", unit, NSStringFromClass([unit class]));
+    return (AudioNodeResult){(__bridge_retained void*)unit, NULL};
 }
 
 // Configure the matrix mixer to invert polarity: diagonal gains set to -1.0

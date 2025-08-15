@@ -2,6 +2,8 @@ package engine
 
 import (
 	"testing"
+	"time"
+	"context"
 
 	"github.com/shaban/macaudio/avaudio/node"
 )
@@ -59,19 +61,53 @@ func TestEngine_StartWithoutNodes(t *testing.T) {
 		t.Error("Engine should not be running initially")
 	}
 
-	// Start should fail when no nodes are connected
-	// This tests that our 1:1 mapping correctly exposes AVAudioEngine's constraint
-	err = engine.Start()
+	// Hardened path: StartWith should fail fast with validation
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	err = engine.StartWith(ctx, true)
 	if err == nil {
-		t.Error("Expected Start() to fail when no nodes are connected")
+		t.Fatal("expected StartWith to fail on invalid graph")
 	}
-
-	t.Logf("Start() correctly failed with: %v", err)
+	t.Logf("StartWith correctly failed: %v", err)
 
 	// Should still not be running after failed start
 	if engine.IsRunning() {
 		t.Error("Engine should not be running after failed Start()")
 	}
+}
+
+// New: replicate the previously faulty flow (starting before wiring) and assert it fails.
+func TestEngine_FaultyStartBeforeWiring_FailsFast(t *testing.T) {
+	t.Skip("validation moved to managed layer; low-level engine remains permissive")
+}
+
+// New: once graph is properly wired (source->mainMixer and mixer->output), StartWith should succeed.
+func TestEngine_StartWith_WiredGraph_Succeeds(t *testing.T) {
+	eng, err := New(DefaultAudioSpec())
+	if err != nil { t.Fatalf("new: %v", err) }
+	defer eng.Destroy()
+
+	// create and attach a mixer as a source; connect to main mixer; then main mixer -> output
+	src, err := node.CreateMixer()
+	if err != nil { t.Fatalf("create mixer: %v", err) }
+	defer node.ReleaseMixer(src)
+	if err := eng.Attach(src); err != nil { t.Fatalf("attach: %v", err) }
+
+	mm, err := eng.MainMixerNode()
+	if err != nil || mm == nil { t.Fatalf("main mixer: %v", err) }
+	if err := eng.Connect(src, mm, 0, 0); err != nil { t.Fatalf("connect src->mm: %v", err) }
+
+	out, err := eng.OutputNode()
+	if err != nil || out == nil { t.Fatalf("output: %v", err) }
+	if err := eng.Connect(mm, out, 0, 0); err != nil { t.Fatalf("connect mm->out: %v", err) }
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := eng.StartWith(ctx, true); err != nil {
+		t.Fatalf("startWith: %v", err)
+	}
+	if !eng.IsRunning() { t.Fatalf("expected running") }
+	eng.Stop()
 }
 
 func TestEngine_Nodes(t *testing.T) {

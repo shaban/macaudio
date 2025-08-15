@@ -33,3 +33,28 @@ func AssertRMSAbove(t *testing.T, eng *engine.Engine, nodePtr unsafe.Pointer, bu
 	}
 	t.Fatalf("signal below threshold: wanted >= %.6f within %s", minRMS, timeout)
 }
+
+// AssertRMSBelow installs a temporary tap and asserts RMS drops below threshold within timeout.
+func AssertRMSBelow(t *testing.T, eng *engine.Engine, nodePtr unsafe.Pointer, bus int, maxRMS float64, timeout time.Duration) {
+	t.Helper()
+	if eng == nil || eng.Ptr() == nil {
+		t.Fatalf("engine is nil")
+	}
+	if nodePtr == nil {
+		t.Fatalf("nodePtr is nil")
+	}
+	tp, err := tap.InstallTap(eng.Ptr(), nodePtr, bus)
+	if err != nil {
+		t.Fatalf("install tap: %v", err)
+	}
+	defer tp.Remove()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		m, err := tp.GetMetrics()
+		if err == nil && m.FrameCount > 0 && m.RMS <= maxRMS {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("signal above threshold: wanted <= %.6f within %s", maxRMS, timeout)
+}

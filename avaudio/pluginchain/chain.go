@@ -12,11 +12,13 @@ PluginChainResult get_effect_audio_node(void* effectPtr);
 */
 import "C"
 import (
+	"context"
 	"errors"
 	"fmt"
 	"unsafe"
 
 	"github.com/shaban/macaudio/avaudio/unit"
+	"github.com/shaban/macaudio/engine/queue"
 	"github.com/shaban/macaudio/plugins"
 )
 
@@ -26,12 +28,14 @@ type PluginChain struct {
 	effects   []*unit.Effect
 	plugins   []*plugins.Plugin
 	enginePtr unsafe.Pointer // Reference to AVAudioEngine for connections
+	disp      *queue.Dispatcher
 }
 
 // ChainConfig holds configuration for creating a plugin chain
 type ChainConfig struct {
-	Name      string
-	EnginePtr unsafe.Pointer // AVAudioEngine pointer from engine package
+	Name       string
+	EnginePtr  unsafe.Pointer // AVAudioEngine pointer from engine package
+	Dispatcher *queue.Dispatcher
 }
 
 // NewPluginChain creates a new empty plugin chain
@@ -41,6 +45,7 @@ func NewPluginChain(config ChainConfig) *PluginChain {
 		effects:   make([]*unit.Effect, 0),
 		plugins:   make([]*plugins.Plugin, 0),
 		enginePtr: config.EnginePtr,
+		disp:      config.Dispatcher,
 	}
 }
 
@@ -237,17 +242,22 @@ func (pc *PluginChain) updateConnections() error {
 		effectPtrs[i] = effect.Ptr()
 	}
 
-	// Convert Go slice to C array - need to pass void** to C
-	errorStr := C.connect_effects(
-		pc.enginePtr,
-		(*unsafe.Pointer)(unsafe.Pointer(&effectPtrs[0])),
-		C.int(len(effectPtrs)),
-	)
-
-	if errorStr != nil {
-		return errors.New(C.GoString(errorStr))
+	// Serialize connect effects through dispatcher (main-thread hop happens in native where needed)
+	run := func() error {
+		errStr := C.connect_effects(
+			pc.enginePtr,
+			(*unsafe.Pointer)(unsafe.Pointer(&effectPtrs[0])),
+			C.int(len(effectPtrs)),
+		)
+		if errStr != nil {
+			return errors.New(C.GoString(errStr))
+		}
+		return nil
 	}
-	return nil
+	if pc.disp != nil {
+		return pc.disp.RunSync(func(_ context.Context) error { return run() })
+	}
+	return run()
 }
 
 // GetInputNode returns the first effect in the chain for external routing

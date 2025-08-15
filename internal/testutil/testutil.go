@@ -6,6 +6,7 @@ import (
 
 	"github.com/shaban/macaudio/avaudio/engine"
 	"github.com/shaban/macaudio/avaudio/node"
+	"github.com/shaban/macaudio/engine/queue"
 )
 
 // SkipUnlessEnv skips the test unless the given env var equals the wanted value.
@@ -57,4 +58,33 @@ func MuteMainMixerNoT(eng *engine.Engine) error {
 		return err
 	}
 	return node.SetMixerVolume(mm, 0.0, 0)
+}
+
+// NewEngineForTest creates an Engine using SmallSpec tuned for tests,
+// mutes the main mixer for quiet runs, and wires t.Cleanup to destroy it.
+// If the engine cannot be created, the test is skipped.
+func NewEngineForTest(t *testing.T) *engine.Engine {
+	t.Helper()
+	eng, err := engine.New(SmallSpec())
+	if err != nil || eng == nil {
+		t.Skipf("skipping: cannot create engine: %v", err)
+		return nil
+	}
+	// Keep tests quiet by default
+	MuteMainMixer(t, eng)
+	t.Cleanup(func() { eng.Destroy() })
+	return eng
+}
+
+// NewDispatcherForTest creates and starts a dispatcher bound to the given engine,
+// and registers t.Cleanup to close it. Useful for dispatcher-backed routing tests.
+func NewDispatcherForTest(t *testing.T, eng *engine.Engine) *queue.Dispatcher {
+	t.Helper()
+	if eng == nil {
+		t.Fatalf("engine is nil")
+	}
+	disp := queue.NewDispatcher(eng, queue.New(32))
+	disp.Start()
+	t.Cleanup(func() { disp.Close() })
+	return disp
 }

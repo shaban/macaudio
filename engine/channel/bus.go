@@ -2,12 +2,14 @@
 package channel
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"unsafe"
 
 	"github.com/shaban/macaudio/avaudio/engine"
 	"github.com/shaban/macaudio/avaudio/node"
+	"github.com/shaban/macaudio/engine/queue"
 )
 
 // Bus wraps an AVAudioMixerNode to act as a simple mix bus with input allocation.
@@ -17,6 +19,7 @@ type Bus struct {
 	name      string
 	eng       *engine.Engine
 	mixer     unsafe.Pointer
+	disp      *queue.Dispatcher
 	mu        sync.Mutex
 	nextInput int
 	inputs    map[int]unsafe.Pointer // input index -> source node pointer
@@ -36,6 +39,27 @@ func NewBus(eng *engine.Engine, name string) (*Bus, error) {
 		return nil, fmt.Errorf("attach bus mixer: %w", err)
 	}
 	return &Bus{name: name, eng: eng, mixer: m, inputs: make(map[int]unsafe.Pointer)}, nil
+}
+
+// NewBusWithDispatcher creates a bus that uses a dispatcher for topology ops.
+func NewBusWithDispatcher(eng *engine.Engine, disp *queue.Dispatcher, name string) (*Bus, error) {
+	if eng == nil {
+		return nil, fmt.Errorf("engine instance cannot be nil")
+	}
+	m, err := node.CreateMixer()
+	if err != nil || m == nil {
+		return nil, fmt.Errorf("create bus mixer: %v", err)
+	}
+	if disp != nil {
+		if err := disp.RunSync(func(_ context.Context) error { return disp.Eng.Attach(m) }); err != nil {
+			_ = node.ReleaseMixer(m)
+			return nil, fmt.Errorf("attach bus mixer via dispatcher: %w", err)
+		}
+	} else if err := eng.Attach(m); err != nil {
+		_ = node.ReleaseMixer(m)
+		return nil, fmt.Errorf("attach bus mixer: %w", err)
+	}
+	return &Bus{name: name, eng: eng, mixer: m, disp: disp, inputs: make(map[int]unsafe.Pointer)}, nil
 }
 
 // Ptr returns the underlying mixer node pointer.
@@ -68,13 +92,19 @@ func (b *Bus) ConnectChannel(ch Channel) (int, error) {
 	}
 	// Ensure nodes are attached as needed
 	if installed, err := node.IsInstalledOnEngine(src); err == nil && !installed {
-		if err := b.eng.Attach(src); err != nil {
+		if b.disp != nil {
+			_ = b.disp.Attach(src)
+		} else if err := b.eng.Attach(src); err != nil {
 			return -1, fmt.Errorf("attach source: %w", err)
 		}
 	}
 	// Allocate input and connect
 	to := b.NextInput()
-	if err := b.eng.Connect(src, b.mixer, 0, to); err != nil {
+	if b.disp != nil {
+		if err := b.disp.Connect(src, b.mixer, 0, to); err != nil {
+			return -1, fmt.Errorf("connect channel->bus: %w", err)
+		}
+	} else if err := b.eng.Connect(src, b.mixer, 0, to); err != nil {
 		return -1, fmt.Errorf("connect channel->bus: %w", err)
 	}
 	b.mu.Lock()
@@ -88,7 +118,12 @@ func (b *Bus) DisconnectInput(input int) error {
 	if b == nil || b.mixer == nil || b.eng == nil {
 		return fmt.Errorf("bus not initialized")
 	}
-	err := b.eng.DisconnectNodeInput(b.mixer, input)
+	var err error
+	if b.disp != nil {
+		err = b.disp.DisconnectNodeInput(b.mixer, input)
+	} else {
+		err = b.eng.DisconnectNodeInput(b.mixer, input)
+	}
 	b.mu.Lock()
 	delete(b.inputs, input)
 	b.mu.Unlock()
@@ -193,4 +228,62 @@ func (b *Bus) GetInputPan(input int) (float32, error) {
 		}
 	}
 	return node.GetMixerPan(b.mixer, input)
+}
+
+// Aux is a thin wrapper over Bus representing the Aux mixbus with restricted routing.
+type Aux struct {
+	bus *Bus
+}
+
+// NewAux creates a new Aux bus using the dispatcher-aware constructor if available.
+func NewAux(eng *engine.Engine, disp *queue.Dispatcher, name string) (*Aux, error) {
+	var b *Bus
+	var err error
+	if disp != nil {
+		b, err = NewBusWithDispatcher(eng, disp, name)
+	} else {
+		b, err = NewBus(eng, name)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &Aux{bus: b}, nil
+}
+
+// Ptr exposes the underlying mixer pointer.
+func (a *Aux) Ptr() unsafe.Pointer {
+	if a == nil || a.bus == nil {
+		return nil
+	}
+	return a.bus.Ptr()
+}
+
+// ConnectToMaster connects the Aux mixer to the engine's master bus.
+func (a *Aux) ConnectToMaster() error {
+	if a == nil || a.bus == nil || a.bus.eng == nil {
+		return fmt.Errorf("aux not initialized")
+	}
+	mm, err := a.bus.eng.MainMixerNode()
+	if err != nil || mm == nil {
+		return fmt.Errorf("main mixer: %v", err)
+	}
+	if a.bus.disp != nil {
+		return a.bus.disp.Connect(a.bus.mixer, mm, 0, 0)
+	}
+	return a.bus.eng.Connect(a.bus.mixer, mm, 0, 0)
+}
+
+// NextInput forwards to the underlying Bus for input allocation.
+func (a *Aux) NextInput() int {
+	if a == nil || a.bus == nil {
+		return 0
+	}
+	return a.bus.NextInput()
+}
+
+// Release releases the aux mixer.
+func (a *Aux) Release() {
+	if a != nil && a.bus != nil {
+		a.bus.Release()
+	}
 }

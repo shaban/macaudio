@@ -11,8 +11,8 @@ func TestResolve_Defaults(t *testing.T) {
 	if got.SampleRate != 48000 {
 		t.Fatalf("rate: want 48000 got %v", got.SampleRate)
 	}
-	if got.BufferSize != 512 {
-		t.Fatalf("buf: want 512 got %v", got.BufferSize)
+	if got.BufferSize != 256 {
+		t.Fatalf("buf: want 256 got %v", got.BufferSize)
 	}
 	if got.ChannelCount != 2 {
 		t.Fatalf("ch: want 2 got %v", got.ChannelCount)
@@ -28,8 +28,8 @@ func TestResolve_Overrides(t *testing.T) {
 	if got.SampleRate != 96000 {
 		t.Fatalf("rate: want 96000 got %v", got.SampleRate)
 	}
-	if got.BufferSize != 256 {
-		t.Fatalf("buf: want 256 got %v", got.BufferSize)
+	if got.BufferSize != 128 {
+		t.Fatalf("buf: want 128 got %v", got.BufferSize)
 	}
 	if got.ChannelCount != 1 {
 		t.Fatalf("ch: want 1 got %v", got.ChannelCount)

@@ -107,3 +107,56 @@ UnitResult get_effect_parameter(void* effectPtr, uint64_t address) {
         return (UnitResult){NULL, [errorMsg UTF8String]};
     }
 }
+
+// Set bypass on AVAudioUnitEffect or AUAudioUnit
+const char* set_effect_bypass(void* effectPtr, int bypass) {
+    if (!effectPtr) {
+        return "Effect pointer is null";
+    }
+    @try {
+        AVAudioUnit* unit = (__bridge AVAudioUnit*)effectPtr;
+        if ([unit isKindOfClass:[AVAudioUnitEffect class]]) {
+            AVAudioUnitEffect* effect = (AVAudioUnitEffect*)unit;
+            effect.bypass = (BOOL)(bypass != 0);
+            return NULL;
+        }
+        if (unit.AUAudioUnit) {
+            unit.AUAudioUnit.shouldBypassEffect = (BOOL)(bypass != 0);
+            return NULL;
+        }
+        return "Unit is not an AVAudioUnitEffect and has no AUAudioUnit";
+    } @catch (NSException* ex) {
+        NSString* msg = [NSString stringWithFormat:@"Failed to set bypass: %@", ex.reason];
+        return [msg UTF8String];
+    }
+}
+
+// Get bypass state
+const char* get_effect_bypass(void* effectPtr, int* result) {
+    if (!result) { return "Result pointer is null"; }
+    if (!effectPtr) { return "Effect pointer is null"; }
+    @try {
+        AVAudioUnit* unit = (__bridge AVAudioUnit*)effectPtr;
+        if ([unit isKindOfClass:[AVAudioUnitEffect class]]) {
+            AVAudioUnitEffect* effect = (AVAudioUnitEffect*)unit;
+            *result = effect.bypass ? 1 : 0;
+            return NULL;
+        }
+        if (unit.AUAudioUnit) {
+            *result = unit.AUAudioUnit.shouldBypassEffect ? 1 : 0;
+            return NULL;
+        }
+        return "Unit is not an AVAudioUnitEffect and has no AUAudioUnit";
+    } @catch (NSException* ex) {
+        NSString* msg = [NSString stringWithFormat:@"Failed to get bypass: %@", ex.reason];
+        return [msg UTF8String];
+    }
+}
+
+// Helper that returns bypass as int and optionally returns error string via out param
+int get_effect_bypass_simple(void* effectPtr, const char** err) {
+    int r = 0;
+    const char* e = get_effect_bypass(effectPtr, &r);
+    if (err) { *err = e; }
+    return r;
+}

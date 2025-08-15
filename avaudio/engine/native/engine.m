@@ -268,8 +268,34 @@ const char* audioengine_attach(AudioEngine* wrapper, void* nodePtr) {
     @try {
         AVAudioEngine* engine = (__bridge AVAudioEngine*)wrapper->engine;
         AVAudioNode* node = (__bridge AVAudioNode*)nodePtr;
-        [engine attachNode:node];
-        return NULL;  // NULL = success
+        if (!node) { return "Node is invalid"; }
+
+        __block const char* err = NULL;
+        void (^work)(void) = ^{
+            @try {
+                // Quick sanity log to help trace crashes
+                // NSLog(@"Attaching node class=%@ ptr=%p", NSStringFromClass([node class]), node);
+                if (node.engine == engine) {
+                    // Already attached to this engine
+                    return;
+                }
+                [engine attachNode:node];
+            } @catch (NSException* ex) {
+                // Treat "already attached" as success if that occurs
+                NSString* reason = ex.reason ?: @"";
+                if ([reason containsString:@"already"] && [reason containsString:@"attached"]) {
+                    err = NULL;
+                } else {
+                    err = [[NSString stringWithFormat:@"Attach exception: %@", reason] UTF8String];
+                }
+            }
+        };
+
+    // Execute directly on the current thread to avoid deadlocks when running under Go tests
+    // where the libdispatch main queue may not be actively serviced.
+    work();
+
+        return err; // NULL on success, error string on failure
     }
     @catch (NSException* exception) {
         NSLog(@"Engine attach exception: %@", exception.reason);
@@ -294,8 +320,17 @@ const char* audioengine_detach(AudioEngine* wrapper, void* nodePtr) {
     @try {
         AVAudioEngine* engine = (__bridge AVAudioEngine*)wrapper->engine;
         AVAudioNode* node = (__bridge AVAudioNode*)nodePtr;
-        [engine detachNode:node];
-        return NULL;  // NULL = success
+        __block const char* err = NULL;
+        void (^work)(void) = ^{
+            @try {
+                [engine detachNode:node];
+            } @catch (NSException* ex) {
+                err = [[NSString stringWithFormat:@"Detach exception: %@", ex.reason] UTF8String];
+            }
+        };
+    // Execute directly on the current thread (see note in audioengine_attach)
+    work();
+        return err;  // NULL on success
     }
     @catch (NSException* exception) {
         NSLog(@"Engine detach exception: %@", exception.reason);
@@ -321,10 +356,17 @@ const char* audioengine_connect(AudioEngine* wrapper, void* sourcePtr, void* des
         AVAudioEngine* engine = (__bridge AVAudioEngine*)wrapper->engine;
         AVAudioNode* sourceNode = (__bridge AVAudioNode*)sourcePtr;
         AVAudioNode* destNode = (__bridge AVAudioNode*)destPtr;
-
-        // Connect with default format (nil means use node's output format)
-        [engine connect:sourceNode to:destNode fromBus:fromBus toBus:toBus format:nil];
-        return NULL;  // NULL = success
+        __block const char* err = NULL;
+        void (^work)(void) = ^{
+            @try {
+                [engine connect:sourceNode to:destNode fromBus:fromBus toBus:toBus format:nil];
+            } @catch (NSException* ex) {
+                err = [[NSString stringWithFormat:@"Connect exception: %@", ex.reason] UTF8String];
+            }
+        };
+    // Execute directly on the current thread (see note in audioengine_attach)
+    work();
+        return err;  // NULL on success
     }
     @catch (NSException* exception) {
         NSLog(@"Engine connect exception: %@", exception.reason);
@@ -351,15 +393,22 @@ const char* audioengine_connect_with_format(AudioEngine* wrapper, void* sourcePt
         AVAudioNode* sourceNode = (__bridge AVAudioNode*)sourcePtr;
         AVAudioNode* destNode = (__bridge AVAudioNode*)destPtr;
         AVAudioFormat* format = formatPtr ? (__bridge AVAudioFormat*)formatPtr : nil;
-
-        if (format) {
-            NSLog(@"Connecting with explicit format: %.0f Hz, %d channels", format.sampleRate, format.channelCount);
-        } else {
-            NSLog(@"Connecting with nil format (will use source node's output format)");
-        }
-
-        [engine connect:sourceNode to:destNode fromBus:fromBus toBus:toBus format:format];
-        return NULL;  // NULL = success
+        __block const char* err = NULL;
+        void (^work)(void) = ^{
+            @try {
+                if (format) {
+                    NSLog(@"Connecting with explicit format: %.0f Hz, %d channels", format.sampleRate, format.channelCount);
+                } else {
+                    NSLog(@"Connecting with nil format (will use source node's output format)");
+                }
+                [engine connect:sourceNode to:destNode fromBus:fromBus toBus:toBus format:format];
+            } @catch (NSException* ex) {
+                err = [[NSString stringWithFormat:@"Connect-with-format exception: %@", ex.reason] UTF8String];
+            }
+        };
+    // Execute directly on the current thread (see note in audioengine_attach)
+    work();
+        return err;  // NULL on success
     }
     @catch (NSException* exception) {
         NSLog(@"Engine connect with format exception: %@", exception.reason);
@@ -421,9 +470,18 @@ const char* audioengine_disconnect_node_input(AudioEngine* wrapper, void* nodePt
             return "Invalid input bus (exceeds node's input count)";
         }
 
-        [engine disconnectNodeInput:node bus:inputBus];
-        NSLog(@"Successfully disconnected input bus %d of node %@", inputBus, node);
-        return NULL;  // NULL = success
+        __block const char* err = NULL;
+        void (^work)(void) = ^{
+            @try {
+                [engine disconnectNodeInput:node bus:inputBus];
+                NSLog(@"Successfully disconnected input bus %d of node %@", inputBus, node);
+            } @catch (NSException* ex) {
+                err = [[NSString stringWithFormat:@"Disconnect exception: %@", ex.reason] UTF8String];
+            }
+        };
+    // Execute directly on the current thread (see note in audioengine_attach)
+    work();
+        return err;  // NULL on success
     }
     @catch (NSException* exception) {
         NSLog(@"Engine disconnect node input exception: %@", exception.reason);

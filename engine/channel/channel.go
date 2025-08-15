@@ -3,31 +3,35 @@
 package channel
 
 import (
+	"context"
 	"fmt"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/shaban/macaudio/avaudio/engine"
 	"github.com/shaban/macaudio/avaudio/node"
 	"github.com/shaban/macaudio/avaudio/pluginchain"
 	"github.com/shaban/macaudio/avaudio/tap"
+	"github.com/shaban/macaudio/engine/queue"
 	"github.com/shaban/macaudio/plugins"
 )
 
-// Channel is the minimal contract for any routable audio channel. Implementations
-// wrap a plugin chain and an output mixer to provide fader/pan and send routing.
+// Channel defines the minimal interface shared by audio channels used by the
+// engine and buses. BaseChannel implements this.
 type Channel interface {
-	// Basic Properties
+	// Identity
 	GetName() string
 	SetName(string)
+	GetDisplayName() string
+	SetDisplayName(string)
 
-	// Audio Control
-	SetVolume(volume float32) error
+	// Mix controls
+	SetVolume(float32) error
 	GetVolume() (float32, error)
-	SetMute(muted bool) error
+	SetMute(bool) error
 	GetMute() (bool, error)
-	// Stereo balance control (-1.0 = left, 0.0 = center, 1.0 = right)
-	SetPan(pan float32) error
+	SetPan(float32) error
 	GetPan() (float32, error)
 
 	// Plugin Chain Management
@@ -46,6 +50,15 @@ type Channel interface {
 	// Status
 	Summary() string
 }
+
+// ChannelKind identifies allowed routing policy for a channel.
+type ChannelKind int
+
+const (
+	ChannelUnknown ChannelKind = iota
+	ChannelInput
+	ChannelPlayer
+)
 
 // Send describes an auxiliary path from a channel to a destination bus.
 // Level/mute are logical controls; level application in the graph may be
@@ -144,13 +157,17 @@ func (sm *SoloManager) recompute() {
 // not own the lifetime of the Engine; callers pass an Engine when connecting.
 type BaseChannel struct {
 	name              string
+	displayName       string
 	enginePtr         unsafe.Pointer
 	engineInstance    *engine.Engine // Reference to engine for accessing AudioSpec
-	routeMu           sync.Mutex     // serialize graph mutations for this channel
+	dispatcher        *queue.Dispatcher
+	dispatcherOwned   bool
+	routeMu           sync.Mutex // serialize graph mutations for this channel
 	pluginChain       *pluginchain.PluginChain
 	outputMixer       unsafe.Pointer   // For volume and mute control (Node)
 	sends             map[string]*Send // Auxiliary sends
 	sendsMu           sync.RWMutex     // Protects sends map and send state
+	kind              ChannelKind
 	released          bool
 	connectedToMaster bool // Track master connection state
 	// state controls
@@ -161,16 +178,16 @@ type BaseChannel struct {
 	meterMu    sync.RWMutex
 	meterTap   *tap.Tap
 	sendMeters map[string]*tap.Tap
-	// phase invert
-	invertEnabled bool           // logical flag for phase inversion
-	invertNode    unsafe.Pointer // placeholder node inserted between chain→mixer
 }
 
 // BaseChannelConfig declares the inputs required to construct a BaseChannel.
 type BaseChannelConfig struct {
 	Name           string
+	DisplayName    string
 	EnginePtr      unsafe.Pointer // AVAudioEngine pointer from avaudio/engine package
 	EngineInstance *engine.Engine // Engine instance for accessing AudioSpec
+	Dispatcher     *queue.Dispatcher
+	Kind           ChannelKind
 }
 
 // NewBaseChannel instantiates a BaseChannel with its own plugin chain and
@@ -187,9 +204,17 @@ func NewBaseChannel(config BaseChannelConfig) (*BaseChannel, error) {
 	}
 
 	// Create plugin chain for this channel
+	chainLabel := config.DisplayName
+	if chainLabel == "" {
+		chainLabel = config.Name
+	}
+	if chainLabel == "" {
+		chainLabel = "Channel"
+	}
 	pluginChain := pluginchain.NewPluginChain(pluginchain.ChainConfig{
-		Name:      config.Name + " Chain",
-		EnginePtr: config.EnginePtr,
+		Name:       chainLabel + " Chain",
+		EnginePtr:  config.EnginePtr,
+		Dispatcher: config.Dispatcher, // may be nil; will be set below if we auto-create
 	})
 
 	// Create output mixer for volume and mute control
@@ -200,12 +225,16 @@ func NewBaseChannel(config BaseChannelConfig) (*BaseChannel, error) {
 
 	bc := &BaseChannel{
 		name:              config.Name,
+		displayName:       firstNonEmpty(config.DisplayName, config.Name),
 		enginePtr:         config.EnginePtr,
 		engineInstance:    config.EngineInstance,
+		dispatcher:        config.Dispatcher,
+		dispatcherOwned:   false,
 		routeMu:           sync.Mutex{},
 		pluginChain:       pluginChain,
 		outputMixer:       outputMixer,
 		sends:             make(map[string]*Send),
+		kind:              config.Kind,
 		released:          false,
 		connectedToMaster: false,
 		userMuted:         false,
@@ -213,8 +242,27 @@ func NewBaseChannel(config BaseChannelConfig) (*BaseChannel, error) {
 		lastVolume:        0.8, // sensible default fader value
 		meterTap:          nil,
 		sendMeters:        make(map[string]*tap.Tap),
-		invertEnabled:     false,
-		invertNode:        nil,
+	}
+	// Default to Input kind if unspecified for backward compatibility
+	if bc.kind == ChannelUnknown {
+		bc.kind = ChannelInput
+	}
+	// If no dispatcher provided, create a default one bound to the engine instance
+	if bc.dispatcher == nil && bc.engineInstance != nil {
+		q := queue.New(32)
+		bc.dispatcher = queue.NewDispatcher(bc.engineInstance, q)
+		bc.dispatcher.Start()
+		bc.dispatcherOwned = true
+	}
+	// Ensure plugin chain uses the same dispatcher
+	if pluginChain != nil && bc.dispatcher != nil {
+		// Replace internal chain with one that has dispatcher if it was nil
+		pluginChain = pluginchain.NewPluginChain(pluginchain.ChainConfig{
+			Name:       firstNonEmpty(bc.displayName, bc.name) + " Chain",
+			EnginePtr:  config.EnginePtr,
+			Dispatcher: bc.dispatcher,
+		})
+		bc.pluginChain = pluginChain
 	}
 	// Initialize mixer volume to lastVolume
 	_ = node.SetMixerVolume(outputMixer, bc.lastVolume, 0)
@@ -230,9 +278,23 @@ func (bc *BaseChannel) GetName() string {
 
 // SetName updates the channel name
 func (bc *BaseChannel) SetName(name string) {
-	bc.name = name
+	// Back-compat: interpret SetName as DisplayName update
+	bc.SetDisplayName(name)
+}
+
+// GetDisplayName returns the user-facing label, defaulting to Name.
+func (bc *BaseChannel) GetDisplayName() string {
+	if bc.displayName == "" {
+		return bc.name
+	}
+	return bc.displayName
+}
+
+// SetDisplayName updates the UI label and propagates to the plugin chain label.
+func (bc *BaseChannel) SetDisplayName(name string) {
+	bc.displayName = name
 	if bc.pluginChain != nil {
-		bc.pluginChain.SetName(name + " Chain")
+		bc.pluginChain.SetName(bc.GetDisplayName() + " Chain")
 	}
 }
 
@@ -288,6 +350,34 @@ func (bc *BaseChannel) SetMute(muted bool) error {
 		return fmt.Errorf("channel has been released")
 	}
 	bc.userMuted = muted
+	// Use dispatcher to apply a tiny ramp to avoid clicks; fall back to immediate.
+	if bc.dispatcher != nil {
+		// Capture locals for closure
+		mix := bc.outputMixer
+		vol := bc.lastVolume
+		if bc.userMuted || bc.soloMuted {
+			vol = 0
+		}
+		// Apply quick 2-step ramp: halfway then target, spaced by ~2ms
+		_ = bc.dispatcher.Enqueue(queue.Func(func(ctx context.Context) error {
+			if mix == nil {
+				return nil
+			}
+			// halfway toward the target
+			cur, _ := node.GetMixerVolume(mix, 0)
+			target := vol
+			mid := (cur + target) / 2
+			_ = node.SetMixerVolume(mix, mid, 0)
+			// small sleep; context-aware
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(2 * time.Millisecond):
+			}
+			return node.SetMixerVolume(mix, target, 0)
+		}))
+		return nil
+	}
 	return bc.applyEffectiveVolume()
 }
 
@@ -416,6 +506,69 @@ func (bc *BaseChannel) CreateSendWithMode(name string, destination Channel, leve
 	return nil
 }
 
+// Aux send helpers: one well-known post-fader send per input channel
+const auxSendName = "aux"
+
+// CreateAuxSend enables a post-fader send from an Input channel to the Aux bus.
+func (bc *BaseChannel) CreateAuxSend(level float32) error {
+	if bc.released {
+		return fmt.Errorf("channel has been released")
+	}
+	if bc.kind != ChannelInput {
+		return fmt.Errorf("aux send not supported for this channel type")
+	}
+	if level < 0.0 || level > 1.0 {
+		return fmt.Errorf("send level must be between 0.0 and 1.0")
+	}
+	bc.sendsMu.RLock()
+	_, exists := bc.sends[auxSendName]
+	bc.sendsMu.RUnlock()
+	if exists {
+		return fmt.Errorf("aux send already exists")
+	}
+	bc.sendsMu.Lock()
+	bc.sends[auxSendName] = &Send{Name: auxSendName, Level: level, Mute: false, Mode: PostFader, prev: level}
+	bc.sendsMu.Unlock()
+	return nil
+}
+
+// ConnectAux connects the channel's Aux send to the provided Aux bus (allocates next input).
+func (bc *BaseChannel) ConnectAux(aux *Aux) (int, error) {
+	if bc.engineInstance == nil {
+		return -1, fmt.Errorf("engine instance not available")
+	}
+	if aux == nil || aux.bus == nil {
+		return -1, fmt.Errorf("aux bus not initialized")
+	}
+	// Ensure aux send exists
+	bc.sendsMu.RLock()
+	_, exists := bc.sends[auxSendName]
+	bc.sendsMu.RUnlock()
+	if !exists {
+		if err := bc.CreateAuxSend(0.0); err != nil {
+			return -1, err
+		}
+	}
+	idx := aux.bus.NextInput()
+	if err := bc.ConnectSendToBus(bc.engineInstance, auxSendName, aux.bus.mixer, idx); err != nil {
+		return -1, err
+	}
+	return idx, nil
+}
+
+// SetAuxSendLevel updates the Aux send level if present.
+func (bc *BaseChannel) SetAuxSendLevel(level float32) error {
+	return bc.SetSendLevel(auxSendName, level)
+}
+
+// DisconnectAux disconnects the Aux send if present.
+func (bc *BaseChannel) DisconnectAux() error {
+	if bc.engineInstance == nil {
+		return fmt.Errorf("engine instance not available")
+	}
+	return bc.DisconnectSend(bc.engineInstance, auxSendName)
+}
+
 // SetSendLevel adjusts the level of an auxiliary send
 func (bc *BaseChannel) SetSendLevel(sendName string, level float32) error {
 	if bc.released {
@@ -537,7 +690,9 @@ func (bc *BaseChannel) ConnectSendToBus(eng *engine.Engine, sendName string, bus
 		source = bc.outputMixer
 		// Ensure attached
 		if installed, err := node.IsInstalledOnEngine(source); err == nil && !installed {
-			if err := eng.Attach(source); err != nil {
+			if bc.dispatcher != nil {
+				_ = bc.dispatcher.Attach(source)
+			} else if err := eng.Attach(source); err != nil {
 				return fmt.Errorf("attach mixer failed: %w", err)
 			}
 		}
@@ -552,7 +707,9 @@ func (bc *BaseChannel) ConnectSendToBus(eng *engine.Engine, sendName string, bus
 		} else {
 			source = bc.outputMixer
 			if installed, err := node.IsInstalledOnEngine(source); err == nil && !installed {
-				if err := eng.Attach(source); err != nil {
+				if bc.dispatcher != nil {
+					_ = bc.dispatcher.Attach(source)
+				} else if err := eng.Attach(source); err != nil {
 					return fmt.Errorf("attach mixer failed: %w", err)
 				}
 			}
@@ -569,7 +726,9 @@ func (bc *BaseChannel) ConnectSendToBus(eng *engine.Engine, sendName string, bus
 			return fmt.Errorf("create send mixer: %v", err)
 		}
 		// Attach and set initial volume (respect mute)
-		if err := eng.Attach(m); err != nil {
+		if bc.dispatcher != nil {
+			_ = bc.dispatcher.Attach(m)
+		} else if err := eng.Attach(m); err != nil {
 			return fmt.Errorf("attach send mixer: %w", err)
 		}
 		initVol := send.Level
@@ -592,17 +751,30 @@ func (bc *BaseChannel) ConnectSendToBus(eng *engine.Engine, sendName string, bus
 		}
 		// Rewire: disconnect previous destination input and our mixer input
 		if send.busInput != nil {
-			_ = eng.DisconnectNodeInput(send.busInput, send.busIndex)
+			if bc.dispatcher != nil {
+				_ = bc.dispatcher.DisconnectNodeInput(send.busInput, send.busIndex)
+			} else {
+				_ = eng.DisconnectNodeInput(send.busInput, send.busIndex)
+			}
 		}
-		_ = eng.DisconnectNodeInput(send.mixer, 0)
+		if bc.dispatcher != nil {
+			_ = bc.dispatcher.DisconnectNodeInput(send.mixer, 0)
+		} else {
+			_ = eng.DisconnectNodeInput(send.mixer, 0)
+		}
 	}
 
 	// Wire source -> send.mixer -> bus
-	if err := eng.Connect(source, send.mixer, 0, 0); err != nil {
-		return fmt.Errorf("connect source->send mixer failed: %w", err)
-	}
-	if err := eng.Connect(send.mixer, busInput, 0, toBus); err != nil {
-		return fmt.Errorf("connect send mixer->bus failed: %w", err)
+	if bc.dispatcher != nil {
+		_ = bc.dispatcher.Connect(source, send.mixer, 0, 0)
+		_ = bc.dispatcher.Connect(send.mixer, busInput, 0, toBus)
+	} else {
+		if err := eng.Connect(source, send.mixer, 0, 0); err != nil {
+			return fmt.Errorf("connect source->send mixer failed: %w", err)
+		}
+		if err := eng.Connect(send.mixer, busInput, 0, toBus); err != nil {
+			return fmt.Errorf("connect send mixer->bus failed: %w", err)
+		}
 	}
 	send.busInput = busInput
 	send.busIndex = toBus
@@ -651,7 +823,11 @@ func (bc *BaseChannel) DisconnectSend(eng *engine.Engine, sendName string) error
 	}
 	// Disconnect bus input if known
 	if send.busInput != nil {
-		_ = eng.DisconnectNodeInput(send.busInput, send.busIndex)
+		if bc.dispatcher != nil {
+			_ = bc.dispatcher.DisconnectNodeInput(send.busInput, send.busIndex)
+		} else {
+			_ = eng.DisconnectNodeInput(send.busInput, send.busIndex)
+		}
 	}
 	// Release per-send mixer if allocated
 	if send.mixer != nil {
@@ -693,17 +869,20 @@ func (bc *BaseChannel) Release() {
 		bc.outputMixer = nil
 	}
 
-	// Release invert node placeholder if allocated
-	if bc.invertNode != nil {
-		node.ReleaseMixer(bc.invertNode)
-		bc.invertNode = nil
-	}
+	// Phase invert node removed in Core v1
 
 	// Clear sends
 	bc.sends = nil
 
 	// Unregister from solo manager
 	DefaultSolo.Unregister(bc)
+
+	// If we own a dispatcher, close it
+	if bc.dispatcherOwned && bc.dispatcher != nil {
+		bc.dispatcher.Close()
+		bc.dispatcher = nil
+		bc.dispatcherOwned = false
+	}
 
 	bc.released = true
 }
@@ -727,7 +906,7 @@ func (bc *BaseChannel) Summary() string {
 	sendCount := len(bc.sends)
 
 	return fmt.Sprintf("Channel '%s': %d effects, %d sends",
-		bc.name, effectCount, sendCount)
+		firstNonEmpty(bc.displayName, bc.name), effectCount, sendCount)
 }
 
 // ConnectPluginChainToMixer connects the plugin chain output to the channel's
@@ -754,7 +933,9 @@ func (bc *BaseChannel) ConnectPluginChainToMixer() error {
 
 	// Best-effort: attach mixer if not already installed on engine
 	if installed, err := node.IsInstalledOnEngine(bc.outputMixer); err == nil && !installed {
-		if err := bc.engineInstance.Attach(bc.outputMixer); err != nil {
+		if bc.dispatcher != nil {
+			_ = bc.dispatcher.Attach(bc.outputMixer)
+		} else if err := bc.engineInstance.Attach(bc.outputMixer); err != nil {
 			return fmt.Errorf("attach mixer failed: %w", err)
 		}
 	}
@@ -768,41 +949,20 @@ func (bc *BaseChannel) ConnectPluginChainToMixer() error {
 		return fmt.Errorf("chain output node is nil")
 	}
 	// Idempotency: ensure previous connection on mixer input bus 0 is cleared
-	_ = bc.engineInstance.DisconnectNodeInput(bc.outputMixer, 0)
-
-	// If phase invert is enabled and we have an invert placeholder node, wire through it
-	if bc.invertEnabled {
-		// Ensure placeholder exists and is attached
-		if bc.invertNode == nil {
-			inv, ierr := node.CreateMixer()
-			if ierr != nil || inv == nil {
-				// Fallback to direct connect if placeholder cannot be created
-				if err := bc.engineInstance.Connect(outPtr, bc.outputMixer, 0, 0); err != nil {
-					return fmt.Errorf("connect chain→mixer failed: %w", err)
-				}
-				return nil
-			}
-			if err := bc.engineInstance.Attach(inv); err != nil {
-				_ = node.ReleaseMixer(inv)
-				if err := bc.engineInstance.Connect(outPtr, bc.outputMixer, 0, 0); err != nil {
-					return fmt.Errorf("connect chain→mixer failed: %w", err)
-				}
-				return nil
-			}
-			bc.invertNode = inv
-		}
-		// Rewire: outPtr -> invertNode -> outputMixer
-		_ = bc.engineInstance.DisconnectNodeInput(bc.invertNode, 0)
-		if err := bc.engineInstance.Connect(outPtr, bc.invertNode, 0, 0); err != nil {
-			return fmt.Errorf("connect chain→invert failed: %w", err)
-		}
-		if err := bc.engineInstance.Connect(bc.invertNode, bc.outputMixer, 0, 0); err != nil {
-			return fmt.Errorf("connect invert→mixer failed: %w", err)
-		}
-		return nil
+	if bc.dispatcher != nil {
+		_ = bc.dispatcher.DisconnectNodeInput(bc.outputMixer, 0)
+	} else {
+		_ = bc.engineInstance.DisconnectNodeInput(bc.outputMixer, 0)
 	}
 
+	// Phase invert path removed in Core v1: direct connect only
+
 	// Default: direct connect
+	// Ensure clean direct connection
+	if bc.dispatcher != nil {
+		_ = bc.dispatcher.Connect(outPtr, bc.outputMixer, 0, 0)
+		return nil
+	}
 	if err := bc.engineInstance.Connect(outPtr, bc.outputMixer, 0, 0); err != nil {
 		return fmt.Errorf("connect chain→mixer failed: %w", err)
 	}
@@ -830,7 +990,9 @@ func (bc *BaseChannel) ConnectToMaster(eng *engine.Engine) error {
 
 	// Ensure our mixer is attached to the engine
 	if installed, err := node.IsInstalledOnEngine(bc.outputMixer); err == nil && !installed {
-		if err := eng.Attach(bc.outputMixer); err != nil {
+		if bc.dispatcher != nil {
+			_ = bc.dispatcher.Attach(bc.outputMixer)
+		} else if err := eng.Attach(bc.outputMixer); err != nil {
 			return fmt.Errorf("attach mixer failed: %w", err)
 		}
 	}
@@ -845,6 +1007,11 @@ func (bc *BaseChannel) ConnectToMaster(eng *engine.Engine) error {
 	}
 
 	// Connect our output mixer to the main mixer (bus 0 to bus 0 for stereo)
+	if bc.dispatcher != nil {
+		_ = bc.dispatcher.Connect(bc.outputMixer, mainMixerPtr, 0, 0)
+		bc.connectedToMaster = true
+		return nil
+	}
 	err = eng.Connect(bc.outputMixer, mainMixerPtr, 0, 0)
 	if err != nil {
 		return fmt.Errorf("failed to connect channel to main mixer: %w", err)
@@ -880,7 +1047,11 @@ func (bc *BaseChannel) DisconnectFromMaster(eng *engine.Engine) error {
 	}
 
 	// Disconnect the main mixer's input bus 0 (where our channel is connected)
-	err = eng.DisconnectNodeInput(mainMixerPtr, 0)
+	if bc.dispatcher != nil {
+		_ = bc.dispatcher.DisconnectNodeInput(mainMixerPtr, 0)
+	} else {
+		err = eng.DisconnectNodeInput(mainMixerPtr, 0)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to disconnect channel from main mixer: %w", err)
 	}
@@ -911,38 +1082,18 @@ func (bc *BaseChannel) ConnectToBus(eng *engine.Engine, busInput unsafe.Pointer,
 	}
 
 	// Connect our output mixer to the specified bus input
-	err := eng.Connect(bc.outputMixer, busInput, fromBus, toBus)
-	if err != nil {
+	if bc.dispatcher != nil {
+		return bc.dispatcher.Connect(bc.outputMixer, busInput, fromBus, toBus)
+	}
+	if err := eng.Connect(bc.outputMixer, busInput, fromBus, toBus); err != nil {
 		return fmt.Errorf("failed to connect channel to bus: %w", err)
 	}
 
 	return nil
 }
 
-// SetPhaseInvert toggles a phase-inversion stage between the insert chain and the channel mixer.
-// Note: current implementation uses a transparent placeholder node; true inversion will be added
-// via a lightweight processing unit. Wiring and idempotency are established here.
-func (bc *BaseChannel) SetPhaseInvert(on bool) error {
-	bc.routeMu.Lock()
-	defer bc.routeMu.Unlock()
-	if bc.released {
-		return fmt.Errorf("channel has been released")
-	}
-	if bc.invertEnabled == on {
-		return nil // idempotent
-	}
-	bc.invertEnabled = on
-
-	// If we don't have any effects in the chain, nothing to rewire now; future connects respect flag
-	if bc.pluginChain == nil || bc.pluginChain.IsEmpty() {
-		return nil
-	}
-	// Rewire chain→(invert?)→mixer per new flag
-	return bc.ConnectPluginChainToMixer()
-}
-
-// IsPhaseInverted reports whether the channel output is currently set to invert polarity.
-func (bc *BaseChannel) IsPhaseInverted() bool { return bc.invertEnabled }
+// Phase inversion was removed in Core v1.
+// Phase inversion removed in Core v1
 
 // internal: applyEffectiveVolume computes and applies volume based on user and solo state
 func (bc *BaseChannel) applyEffectiveVolume() error {
@@ -987,7 +1138,9 @@ func (bc *BaseChannel) EnableOutputMetering(eng *engine.Engine, enable bool) err
 			return nil
 		}
 		if installed, err := node.IsInstalledOnEngine(bc.outputMixer); err == nil && !installed {
-			if err := eng.Attach(bc.outputMixer); err != nil {
+			if bc.dispatcher != nil {
+				_ = bc.dispatcher.Attach(bc.outputMixer)
+			} else if err := eng.Attach(bc.outputMixer); err != nil {
 				return fmt.Errorf("attach mixer for meter: %w", err)
 			}
 		}
@@ -1043,7 +1196,9 @@ func (bc *BaseChannel) EnableSendMetering(eng *engine.Engine, sendName string, e
 			return nil
 		}
 		if installed, err := node.IsInstalledOnEngine(send.mixer); err == nil && !installed {
-			if err := eng.Attach(send.mixer); err != nil {
+			if bc.dispatcher != nil {
+				_ = bc.dispatcher.Attach(send.mixer)
+			} else if err := eng.Attach(send.mixer); err != nil {
 				return fmt.Errorf("attach send mixer for meter: %w", err)
 			}
 		}
@@ -1074,4 +1229,12 @@ func (bc *BaseChannel) SendRMS(sendName string) (float64, error) {
 		return 0, err
 	}
 	return m.RMS, nil
+}
+
+// helper: pick first non-empty string
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }

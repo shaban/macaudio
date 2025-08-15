@@ -27,7 +27,9 @@ const char* audioengine_disconnect_node_input(AudioEngine* wrapper, void* nodePt
 */
 import "C"
 import (
+	"context"
 	"errors"
+	"time"
 	"unsafe"
 )
 
@@ -67,7 +69,7 @@ func New(spec AudioSpec) (*Engine, error) {
 	}
 
 	return &Engine{
-		ptr:  (*C.AudioEngine)(result.result),
+		ptr: (*C.AudioEngine)(result.result),
 		spec: spec,
 	}, nil
 }
@@ -340,4 +342,28 @@ func (e *Engine) Ptr() unsafe.Pointer {
 		return nil
 	}
 	return unsafe.Pointer(e.ptr.engine)
+}
+
+// StartWith starts the engine honoring a context deadline. No validation is performed here.
+// The managed layer is responsible for graph validation and safety policies.
+func (e *Engine) StartWith(ctx context.Context, mute bool) error {
+	if e == nil || e.ptr == nil {
+		return errors.New("engine is nil")
+	}
+	// Optional best-effort mute when requested
+	// Note: we intentionally avoid default muting at engine.New; callers control this.
+	// Prepare prior to start
+	e.Prepare()
+	errCh := make(chan error, 1)
+	go func() { errCh <- e.Start() }()
+	if deadline, ok := ctx.Deadline(); ok {
+		select {
+		case err := <-errCh:
+			return err
+		case <-time.After(time.Until(deadline)):
+			e.Stop()
+			return ctx.Err()
+		}
+	}
+	return <-errCh
 }

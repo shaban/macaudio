@@ -41,6 +41,7 @@ func NewMonoToStereo(config MonoToStereoConfig) (*MonoToStereoChannel, error) {
 		Name:           config.Name,
 		EnginePtr:      config.Engine.Ptr(), // Derive from high-level engine
 		EngineInstance: config.Engine,
+		Kind:           channel.ChannelInput,
 	}
 
 	// Create base channel (uses a mixer node internally)

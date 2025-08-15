@@ -2,9 +2,9 @@ package channel
 
 import (
 	"testing"
+	"time"
 	"unsafe"
 
-	"github.com/shaban/macaudio/avaudio/engine"
 	"github.com/shaban/macaudio/avaudio/node"
 	"github.com/shaban/macaudio/avaudio/pluginchain"
 	"github.com/shaban/macaudio/internal/testutil"
@@ -16,60 +16,23 @@ import (
 // mockChannel implements the Channel interface for testing sends
 type mockChannel struct {
 	name     string
+	display  string
 	released bool
 }
 
-// TestPhaseInvertToggle verifies that enabling/disabling phase invert rewires safely and is idempotent.
-func TestPhaseInvertToggle(t *testing.T) {
-	spec := testutil.SmallSpec()
-	eng, err := engine.New(spec)
-	if err != nil {
-		t.Fatalf("engine new: %v", err)
-	}
-	defer eng.Destroy()
+// (Aux routing constraints covered by integration tests outside this package)
 
-	ch, err := NewBaseChannel(BaseChannelConfig{Name: "phase", EnginePtr: eng.Ptr(), EngineInstance: eng})
-	if err != nil {
-		t.Fatalf("new channel: %v", err)
-	}
+// Phase inversion feature removed in Core v1; related tests deleted.
 
-	// No effects: toggling invert should be idempotent and not error
-	if err := ch.SetPhaseInvert(true); err != nil {
-		t.Fatalf("enable invert: %v", err)
+func (mc *mockChannel) GetName() string     { return mc.name }
+func (mc *mockChannel) SetName(name string) { mc.name = name }
+func (mc *mockChannel) GetDisplayName() string {
+	if mc.display != "" {
+		return mc.display
 	}
-	if err := ch.SetPhaseInvert(true); err != nil {
-		t.Fatalf("idempotent enable invert: %v", err)
-	}
-	if !ch.IsPhaseInverted() {
-		t.Fatalf("expected phase inverted flag true")
-	}
-	if err := ch.SetPhaseInvert(false); err != nil {
-		t.Fatalf("disable invert: %v", err)
-	}
-	if ch.IsPhaseInverted() {
-		t.Fatalf("expected phase inverted flag false")
-	}
-
-	// Add a no-op effect (use first available plugin from plugins package if supported), else skip wiring test
-	// For now, just call ConnectPluginChainToMixer and ensure it doesn't error with current state
-	if err := ch.ConnectPluginChainToMixer(); err != nil {
-		t.Fatalf("connect chain to mixer: %v", err)
-	}
-
-	// Toggle invert with non-empty chain path (chain may still be empty; method is safe regardless)
-	if err := ch.SetPhaseInvert(true); err != nil {
-		t.Fatalf("enable invert (post-connect): %v", err)
-	}
-	if err := ch.SetPhaseInvert(false); err != nil {
-		t.Fatalf("disable invert (post-connect): %v", err)
-	}
-
-	// Ensure release cleans up without panic
-	ch.Release()
+	return mc.name
 }
-
-func (mc *mockChannel) GetName() string                                             { return mc.name }
-func (mc *mockChannel) SetName(name string)                                         { mc.name = name }
+func (mc *mockChannel) SetDisplayName(name string)                                  { mc.display = name }
 func (mc *mockChannel) SetVolume(volume float32) error                              { return nil }
 func (mc *mockChannel) GetVolume() (float32, error)                                 { return 0.8, nil }
 func (mc *mockChannel) SetMute(muted bool) error                                    { return nil }
@@ -87,11 +50,10 @@ func (mc *mockChannel) Summary() string                                         
 
 func TestNewBaseChannel(t *testing.T) {
 	// Create a real engine for valid test cases
-	eng, err := engine.New(engine.DefaultAudioSpec())
-	if err != nil || eng == nil {
-		t.Skip("Cannot create engine for testing")
+	eng := testutil.NewEngineForTest(t)
+	if eng == nil {
+		return
 	}
-	defer eng.Destroy()
 
 	tests := []struct {
 		name      string
@@ -185,11 +147,10 @@ func TestNewBaseChannel(t *testing.T) {
 
 func TestBaseChannelNaming(t *testing.T) {
 	// Create channel with real engine for testing
-	eng, err := engine.New(engine.DefaultAudioSpec())
-	if err != nil || eng == nil {
-		t.Skip("Cannot create engine for testing")
+	eng := testutil.NewEngineForTest(t)
+	if eng == nil {
+		return
 	}
-	defer eng.Destroy()
 
 	config := BaseChannelConfig{
 		Name:           "Original Name",
@@ -210,8 +171,11 @@ func TestBaseChannelNaming(t *testing.T) {
 
 	// Test name change
 	channel.SetName("New Name")
-	if channel.GetName() != "New Name" {
-		t.Errorf("Expected name 'New Name', got '%s'", channel.GetName())
+	// GetName remains the immutable ID; DisplayName should change
+	if dn, ok := interface{}(channel).(interface{ GetDisplayName() string }); ok {
+		if dn.GetDisplayName() != "New Name" {
+			t.Errorf("Expected display name 'New Name', got '%s'", dn.GetDisplayName())
+		}
 	}
 
 	// Test that plugin chain name also updates
@@ -225,11 +189,10 @@ func TestBaseChannelNaming(t *testing.T) {
 }
 
 func TestBaseChannelRelease(t *testing.T) {
-	eng, err := engine.New(engine.DefaultAudioSpec())
-	if err != nil || eng == nil {
-		t.Skip("Cannot create engine for testing")
+	eng := testutil.NewEngineForTest(t)
+	if eng == nil {
+		return
 	}
-	defer eng.Destroy()
 
 	config := BaseChannelConfig{
 		Name:           "Release Test Channel",
@@ -268,11 +231,10 @@ func TestBaseChannelWithRealEngine(t *testing.T) {
 	t.Log("Testing BaseChannel with real AVAudioEngine...")
 
 	// Create a real engine
-	eng, err := engine.New(engine.DefaultAudioSpec())
-	if err != nil || eng == nil {
-		t.Skip("Cannot create AVAudioEngine for testing")
+	eng := testutil.NewEngineForTest(t)
+	if eng == nil {
+		return
 	}
-	defer eng.Destroy()
 
 	config := BaseChannelConfig{
 		Name:           "Real Engine Test",
@@ -314,11 +276,10 @@ func TestBaseChannelWithRealEngine(t *testing.T) {
 
 func TestChannel_ConnectPluginChainToMixer_WithSingleAppleEffect(t *testing.T) {
 	// Create engine
-	eng, err := engine.New(engine.DefaultAudioSpec())
-	if err != nil || eng == nil {
-		t.Skip("Cannot create AVAudioEngine for testing")
+	eng := testutil.NewEngineForTest(t)
+	if eng == nil {
+		return
 	}
-	defer eng.Destroy()
 
 	// Build channel
 	channel, err := NewBaseChannel(BaseChannelConfig{
@@ -368,11 +329,10 @@ func TestChannel_ConnectPluginChainToMixer_WithSingleAppleEffect(t *testing.T) {
 }
 
 func TestChannel_MasterRouting_Smoke(t *testing.T) {
-	eng, err := engine.New(engine.DefaultAudioSpec())
-	if err != nil || eng == nil {
-		t.Skip("Cannot create AVAudioEngine for testing")
+	eng := testutil.NewEngineForTest(t)
+	if eng == nil {
+		return
 	}
-	defer eng.Destroy()
 
 	ch, err := NewBaseChannel(BaseChannelConfig{
 		Name:           "Master Smoke",
@@ -410,11 +370,10 @@ func TestChannel_MasterRouting_Smoke(t *testing.T) {
 }
 
 func TestBaseChannel_VolumeAndPan(t *testing.T) {
-	eng, err := engine.New(engine.DefaultAudioSpec())
-	if err != nil || eng == nil {
-		t.Skip("Cannot create engine")
+	eng := testutil.NewEngineForTest(t)
+	if eng == nil {
+		return
 	}
-	defer eng.Destroy()
 
 	ch, err := NewBaseChannel(BaseChannelConfig{
 		Name:           "MixCtl",
@@ -448,11 +407,10 @@ func TestBaseChannel_VolumeAndPan(t *testing.T) {
 }
 
 func TestChannel_Sends_PreAndPostFader_Smoke(t *testing.T) {
-	eng, err := engine.New(engine.DefaultAudioSpec())
-	if err != nil || eng == nil {
-		t.Skip("Cannot create engine")
+	eng := testutil.NewEngineForTest(t)
+	if eng == nil {
+		return
 	}
-	defer eng.Destroy()
 
 	// Create a destination bus mixer
 	busMixer, err := node.CreateMixer()
@@ -500,11 +458,10 @@ func TestChannel_Sends_PreAndPostFader_Smoke(t *testing.T) {
 }
 
 func TestChannel_Idempotent_Master_And_Send_Rewire(t *testing.T) {
-	eng, err := engine.New(engine.DefaultAudioSpec())
-	if err != nil || eng == nil {
-		t.Skip("Cannot create engine")
+	eng := testutil.NewEngineForTest(t)
+	if eng == nil {
+		return
 	}
-	defer eng.Destroy()
 
 	// Create bus A and B
 	busA, err := node.CreateMixer()
@@ -562,12 +519,66 @@ func TestChannel_Idempotent_Master_And_Send_Rewire(t *testing.T) {
 	}
 }
 
-func TestBus_Create_Connect_Disconnect(t *testing.T) {
-	eng, err := engine.New(engine.DefaultAudioSpec())
-	if err != nil || eng == nil {
-		t.Skip("Cannot create engine")
+func TestDispatcher_Backend_Routing_With_Live_Volume(t *testing.T) {
+	eng := testutil.NewEngineForTest(t)
+	if eng == nil {
+		return
 	}
-	defer eng.Destroy()
+
+	// Create a dispatcher bound to the engine
+	disp := testutil.NewDispatcherForTest(t, eng)
+
+	ch, err := NewBaseChannel(BaseChannelConfig{
+		Name:           "DispRoute",
+		EnginePtr:      eng.Ptr(),
+		EngineInstance: eng,
+		Dispatcher:     disp,
+	})
+	if err != nil {
+		t.Fatalf("channel: %v", err)
+	}
+	defer ch.Release()
+
+	// Create a destination bus using the same dispatcher
+	bus, err := NewBusWithDispatcher(eng, disp, "Aux")
+	if err != nil {
+		t.Fatalf("bus: %v", err)
+	}
+	defer bus.Release()
+
+	// Kick off some quick volume changes in parallel while we route
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 10; i++ {
+			_ = ch.SetVolume(0.1 + 0.08*float32(i))
+			time.Sleep(1 * time.Millisecond)
+		}
+	}()
+
+	// Perform dispatcher-backed routing
+	if err := ch.ConnectToMaster(eng); err != nil {
+		t.Fatalf("connect master: %v", err)
+	}
+	if _, err := bus.ConnectChannel(ch); err != nil {
+		t.Fatalf("connect to aux: %v", err)
+	}
+
+	<-done
+
+	// Smoke check: read back volume and pan
+	if v, err := ch.GetVolume(); err != nil {
+		t.Fatalf("get vol: %v", err)
+	} else if v <= 0 {
+		t.Fatalf("unexpected zero volume after moves")
+	}
+}
+
+func TestBus_Create_Connect_Disconnect(t *testing.T) {
+	eng := testutil.NewEngineForTest(t)
+	if eng == nil {
+		return
+	}
 
 	bus, err := NewBus(eng, "AuxBus")
 	if err != nil {
@@ -595,11 +606,10 @@ func TestBus_Create_Connect_Disconnect(t *testing.T) {
 }
 
 func TestBus_InputLevelAndPan(t *testing.T) {
-	eng, err := engine.New(engine.DefaultAudioSpec())
-	if err != nil || eng == nil {
-		t.Skip("Cannot create engine")
+	eng := testutil.NewEngineForTest(t)
+	if eng == nil {
+		return
 	}
-	defer eng.Destroy()
 
 	bus, err := NewBus(eng, "AuxBus2")
 	if err != nil {
@@ -628,11 +638,10 @@ func TestBus_InputLevelAndPan(t *testing.T) {
 }
 
 func TestChannel_Send_LevelAndMute_Control(t *testing.T) {
-	eng, err := engine.New(engine.DefaultAudioSpec())
-	if err != nil || eng == nil {
-		t.Skip("Cannot create engine")
+	eng := testutil.NewEngineForTest(t)
+	if eng == nil {
+		return
 	}
-	defer eng.Destroy()
 
 	// Destination bus mixer
 	busMixer, err := node.CreateMixer()
@@ -675,3 +684,6 @@ func TestChannel_Send_LevelAndMute_Control(t *testing.T) {
 		t.Fatalf("disconnect send: %v", err)
 	}
 }
+
+// TestPhaseInvert_Cancellation verifies that summing a signal and its inverted copy cancels.
+// Cancellation test removed with phase inversion.

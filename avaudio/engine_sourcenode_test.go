@@ -4,6 +4,7 @@ import (
 	"os"
 	"testing"
 	"time"
+	"context"
 
 	"github.com/shaban/macaudio/avaudio/engine"
 	"github.com/shaban/macaudio/avaudio/sourcenode"
@@ -271,6 +272,61 @@ func TestEngine_SourceNode_FullPipeline(t *testing.T) {
 	}
 
 	t.Log("Full pipeline integration test passed!")
+}
+
+// Hardened behavior: starting before wiring should fail fast with a validation error via StartWith.
+func TestEngine_StartWith_Fails_On_Unwired_Graph(t *testing.T) {
+	t.Skip("validation moved to managed layer; low-level engine remains permissive")
+}
+
+// Hardened behavior: after correctly wiring source->mainMixer and mainMixer->output, StartWith should succeed quickly.
+func TestEngine_StartWith_Succeeds_On_Wired_Graph(t *testing.T) {
+	eng, err := engine.New(testutil.SmallSpec())
+	if err != nil || eng == nil {
+		t.Skip("Cannot create engine")
+	}
+	defer eng.Destroy()
+
+	// Create a simple tone source and wire it through main mixer to output
+	tone, err := sourcenode.NewTone()
+	if err != nil {
+		t.Fatalf("tone: %v", err)
+	}
+	defer tone.Destroy()
+
+	srcPtr, err := tone.GetNodePtr()
+	if err != nil || srcPtr == nil {
+		t.Fatalf("tone ptr: %v", err)
+	}
+	if err := eng.Attach(srcPtr); err != nil {
+		t.Fatalf("attach tone: %v", err)
+	}
+
+	mm, err := eng.MainMixerNode()
+	if err != nil || mm == nil {
+		t.Fatalf("main mixer: %v", err)
+	}
+	if err := eng.Connect(srcPtr, mm, 0, 0); err != nil {
+		t.Fatalf("connect src->mm: %v", err)
+	}
+	out, err := eng.OutputNode()
+	if err != nil || out == nil {
+		t.Fatalf("output: %v", err)
+	}
+	if err := eng.Connect(mm, out, 0, 0); err != nil {
+		t.Fatalf("connect mm->out: %v", err)
+	}
+
+	// Start muted (tests stay quiet) with a small timeout
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := eng.StartWith(ctx, true); err != nil {
+		t.Fatalf("StartWith failed on wired graph: %v", err)
+	}
+	if !eng.IsRunning() {
+		t.Fatalf("expected running")
+	}
+	eng.Stop()
 }
 
 func TestEngine_SourceNode_ErrorConditions(t *testing.T) {

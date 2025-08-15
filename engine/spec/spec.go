@@ -19,11 +19,16 @@ func Resolve(s sess.AudioSpec) avengine.AudioSpec {
 	if buf <= 0 {
 		switch s.LatencyHint {
 		case sess.LatencyLow:
-			buf = 256
+			// Prefer 64 at <=48k for snappier feel; scale to 128 for higher rates
+			if targetRate <= 48000 {
+				buf = 64
+			} else {
+				buf = 128
+			}
 		case sess.LatencyHigh:
 			buf = 1024
 		default:
-			buf = 512
+			buf = 256
 		}
 	}
 

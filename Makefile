@@ -14,15 +14,21 @@ test-devices:
 
 # Run all tests (fast defaults, muted and short where possible)
 test:
-	@echo "🧪 Running full test suite..."
-	go test ./...
+	@echo "🧪 Running test suite (verbose, short, 2m timeout)..."
+	go test -v -short -timeout=2m ./...
 	@echo "✅ Tests complete"
 
 # Run all tests with race detector
 test-race:
-	@echo "🏁 Running test suite with -race..."
-	go test -race ./...
+	@echo "🏁 Running test suite with -race (verbose, short, 4m timeout)..."
+	go test -race -v -short -timeout=4m ./...
 	@echo "✅ Race tests complete"
+
+# Run all tests non-short (may be slower); useful before releasing
+test-all:
+	@echo "🧪 Running full test suite (verbose, 10m timeout)..."
+	go test -v -timeout=10m ./...
+	@echo "✅ Full tests complete"
 
 # Run audible tests explicitly (opt-in)
 test-audible:

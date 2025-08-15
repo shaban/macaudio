@@ -223,3 +223,52 @@ func TestEffectLifecycle(t *testing.T) {
 
 	t.Log("✅ Effect lifecycle test completed")
 }
+
+func TestEffectBypass(t *testing.T) {
+	// Discover Apple AU effects
+	pluginList, err := plugins.List()
+	if err != nil {
+		t.Fatalf("Failed to list plugins: %v", err)
+	}
+	effects := pluginList.ByManufacturer("appl").ByType("aufx")
+	if len(effects) == 0 {
+		t.Skip("No Apple AU effects found for bypass test")
+	}
+
+	// Introspect first effect
+	plg, err := effects[0].Introspect()
+	if err != nil {
+		t.Fatalf("Failed to introspect plugin: %v", err)
+	}
+
+	eff, err := CreateEffect(plg)
+	if err != nil {
+		t.Fatalf("Failed to create effect: %v", err)
+	}
+	defer eff.Release()
+
+	// Toggle bypass on
+	if err := eff.SetBypass(true); err != nil {
+		t.Skipf("Bypass not supported or failed to set: %v", err)
+	}
+
+	isOn, err := eff.IsBypassed()
+	if err != nil {
+		t.Skipf("Failed to query bypass state: %v", err)
+	}
+	if !isOn {
+		t.Errorf("Expected bypass ON after SetBypass(true)")
+	}
+
+	// Toggle bypass off
+	if err := eff.SetBypass(false); err != nil {
+		t.Errorf("Failed to set bypass off: %v", err)
+	}
+	isOn, err = eff.IsBypassed()
+	if err != nil {
+		t.Errorf("Failed to query bypass state: %v", err)
+	}
+	if isOn {
+		t.Errorf("Expected bypass OFF after SetBypass(false)")
+	}
+}

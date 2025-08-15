@@ -5,12 +5,16 @@ package unit
 #cgo LDFLAGS: -framework AVFoundation -framework AudioToolbox -framework Foundation
 #include "native/unit.m"
 #include <stdlib.h>
+#include <stdint.h>
 
 // Function declarations - CGO resolves UnitResult from .m file
 UnitResult create_unit_effect(uint32_t type, uint32_t subtype, uint32_t manufacturer);
 const char* release_unit_effect(void* effectPtr);
 const char* set_effect_parameter(void* effectPtr, uint64_t address, float value);
 UnitResult get_effect_parameter(void* effectPtr, uint64_t address);
+const char* set_effect_bypass(void* effectPtr, int bypass);
+const char* get_effect_bypass(void* effectPtr, int* result);
+int get_effect_bypass_simple(void* effectPtr, const char** err);
 */
 import "C"
 import (
@@ -92,6 +96,30 @@ func (e *Effect) GetParameter(param plugins.Parameter) (float32, error) {
 	return value, nil
 }
 
+// SetBypass toggles the effect's bypass if supported by the underlying unit.
+func (e *Effect) SetBypass(bypass bool) error {
+	if e.ptr == nil {
+		return fmt.Errorf("effect has been released")
+	}
+	if errStr := C.set_effect_bypass(e.ptr, C.int(boolToInt(bypass))); errStr != nil {
+		return errors.New(C.GoString(errStr))
+	}
+	return nil
+}
+
+// IsBypassed returns the current bypass state if available.
+func (e *Effect) IsBypassed() (bool, error) {
+	if e.ptr == nil {
+		return false, fmt.Errorf("effect has been released")
+	}
+	var cErr *C.char
+	r := C.get_effect_bypass_simple(e.ptr, &cErr)
+	if cErr != nil {
+		return false, errors.New(C.GoString(cErr))
+	}
+	return int(r) != 0, nil
+}
+
 // GetPlugin returns the plugin metadata for this effect
 func (e *Effect) GetPlugin() *plugins.Plugin {
 	return e.plugin
@@ -108,4 +136,11 @@ func stringToOSType(s string) uint32 {
 		return 0
 	}
 	return uint32(s[0])<<24 | uint32(s[1])<<16 | uint32(s[2])<<8 | uint32(s[3])
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
