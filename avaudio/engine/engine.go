@@ -69,7 +69,7 @@ func New(spec AudioSpec) (*Engine, error) {
 	}
 
 	return &Engine{
-		ptr: (*C.AudioEngine)(result.result),
+		ptr:  (*C.AudioEngine)(result.result),
 		spec: spec,
 	}, nil
 }

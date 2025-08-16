@@ -192,6 +192,16 @@ func (devices AudioDevices) ByType(deviceType string) AudioDevices {
 	return filteredDevices
 }
 
+// ByUID returns the audio device with the specified UID
+func (devices AudioDevices) ByUID(uid string) *AudioDevice {
+	for i, device := range devices {
+		if device.UID == uid {
+			return &devices[i]
+		}
+	}
+	return nil
+}
+
 // MIDIDevice represents a MIDI device with input/output capabilities
 type MIDIDevice struct {
 	Device                  // Embedded base device
@@ -319,6 +329,16 @@ func (devices MIDIDevices) ByModel(model string) MIDIDevices {
 		}
 	}
 	return filteredDevices
+}
+
+// ByUID returns the MIDI device with the specified UID
+func (devices MIDIDevices) ByUID(uid string) *MIDIDevice {
+	for i, device := range devices {
+		if device.UID == uid {
+			return &devices[i]
+		}
+	}
+	return nil
 }
 
 // MIDIDeviceResult represents the result for MIDI devices
