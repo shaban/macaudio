@@ -2,30 +2,110 @@
 
 ## Overview
 
-MacAudio provides a Go library for building audio applications on macOS using AVFoundation/AudioUnit. The engine supports plugin hosting, multi-channel routing, and real-time audio processing with a serializable, UUID-based object model.
+MacAudio provides a Go library for building audio applications on macOS using AVFoundation/AudioUnit. The engine supports plugin hosting, multi-channel routing, and real-time audio pr11. **Error Handling**: Library detects, consuming app handles recovery
+12. **Error Callback Threading**: Error callbacks dispatched on background queue - consuming app responsibility to marshal to main thread for UI updates
+13. **Recording**: Unmanaged tap access - consuming app implements recording logicessing with a serializable, UUID-based object model.
 
 ## Core Design Principles
 
 1. **No Plugin Caching** - Use intelligent List() calls to minimize introspection overhead
 2. **UUID Identity** - Every component has a unique UUID for serialization/deserialization  
-3. **Struct Tree** - Hierarchical, unambiguous object model
-4. **Serializable State** - Full engine state can be saved/restored
-5. **AVAudioEngine Native** - Let AVAudioEngine handle sample rate conversions and internal processing
+3. **UUID Hybrid Pattern** - Struct fields use `uuid.UUID` for type safety, map keys use `string` for JSON compatibility
+4. **Struct Tree** - Hierarchical, unambiguous object model
+5. **Serializable State** - Full engine state can be saved/restored
+6. **AVAudioEngine Native** - Let AVAudioEngine handle sample rate conversions and internal processing
 
-## Engine Specification
+## Engine Initialization Strategy - PROGRAMMATIC APPROACH
 
-### Audio Specifications
+**ARCHITECTURAL DECISION**: MacAudio follows a **programmatic initialization** approach that supports both incremental development and complete serialization/deserialization workflows.
+
+### Core Principles
+1. **Incremental Construction**: App can build engine step-by-step, adding channels as needed
+2. **Meaningful Errors**: Engine provides specific guidance when start is attempted with incomplete configuration
+3. **Serialization Support**: Engine state can be saved/restored at any initialization stage
+4. **Validation on Demand**: Engine validates readiness only when `Start()` is called
+
+### Engine Lifecycle States
 ```go
-type EngineSpec struct {
-    BufferSize   int     // Required: 64, 128, 256, 512, 1024 frames
-    // No SampleRate - let AVAudioEngine handle all conversions
-    // No BitDepth - AVAudioEngine uses 32-bit float internally
+type EngineInitState int
+const (
+    EngineCreated     EngineInitState = iota // AVFoundation engine created, no channels
+    MasterReady       EngineInitState = iota // Master channel initialized
+    ChannelsReady     EngineInitState = iota // At least one audio channel exists
+    AudioGraphReady   EngineInitState = iota // Complete audio path validated
+    EngineRunning     EngineInitState = iota // AVFoundation engine started successfully
+)
+```
+
+### Programmatic Usage Pattern
+```go
+// 1. Create engine with minimal configuration
+engine, err := macaudio.NewEngine(macaudio.EngineConfig{
+    BufferSize:      512,
+    OutputDeviceUID: "BuiltInSpeakerDevice", // Only required field
+})
+
+// 2. Add channels incrementally (library-driven)
+audioChannel, err := engine.CreateAudioInputChannel("mic", AudioInputConfig{
+    DeviceUID: "USB-Audio-Device",
+})
+
+midiChannel, err := engine.CreateMidiInputChannel("piano", MidiInputConfig{
+    DeviceUID: "Digital-Piano-MIDI",
+})
+
+// 3. Attempt to start - engine validates and provides specific errors
+if err := engine.Start(); err != nil {
+    // Error message guides developer: "MIDI channel 'piano' requires soundbank loading"
+    midiChannel.LoadSoundbank("/path/to/piano.dls")
+    // Retry start
 }
 ```
 
-**Rationale**: AVAudioEngine uses 32-bit float processing internally and handles all sample rate conversions. We only need to specify buffer size for latency/performance control.
+### Serialization Workflow
+```go
+// Save engine state at any point
+engineData, err := engine.Serialize()
+saveToFile("session.json", engineData)
 
-**Potential Issues**: None identified - AVAudioEngine's automatic conversion handling is robust.
+// Restore engine state
+engine, err := macaudio.DeserializeEngine(engineData)
+// Engine is restored in exact same initialization state
+// Can add more channels or start immediately if AudioGraphReady
+
+if err := engine.Start(); err != nil {
+    // Handle any device offline issues that occurred since serialization
+}
+```
+
+**Benefits**:
+- ✅ **Developer Experience**: Clear error messages guide implementation
+- ✅ **Flexibility**: Supports simple and complex audio setups equally well  
+- ✅ **Serialization**: Full state preservation at any initialization stage
+- ✅ **Library Pattern**: App-driven requests with meaningful validation feedback
+```go
+type EngineSpec struct {
+    BufferSize   int     // Required: 64, 128, 256, 512, 1024 frames
+    // No BitDepth - AVAudioEngine uses 32-bit float internally
+    // No SampleRate - AVAudioEngine handles sample rate conversion automatically
+}
+
+type EngineConfig struct {
+    BufferSize      int          // Required: 64, 128, 256, 512, 1024 frames
+    OutputDeviceUID string       // Single output device for entire engine - CORRECTED
+    ErrorHandler    ErrorHandler // Optional: defaults to DefaultErrorHandler
+    // ❌ REMOVED: AudioDeviceUID - individual channels bind to their own input devices
+    // ❌ REMOVED: MidiDeviceUID - individual channels bind to their own MIDI devices  
+    // ❌ REMOVED: SampleRate - AVAudioEngine handles sample rate conversion automatically
+}
+```
+
+**Rationale**: AVAudioEngine uses 32-bit float processing internally and handles all sample rate conversions automatically. We only need to specify buffer size for latency/performance control. The engine has a single output device - multiple inputs are handled through individual channels.
+
+**Device Strategy**: 
+- **Input**: Each AudioInputChannel/MidiInputChannel specifies its own input device
+- **Output**: Single OutputDeviceUID in EngineConfig - all audio routes through master channel to this device
+- **Rationale**: Professional audio workflows typically use one main output (monitors/headphones) but multiple input sources
 
 ## Engine Tree Structure (Updated)
 
@@ -175,7 +255,25 @@ type PluginChain struct {
 **Plugin Chain Operations**:
 - Support reordering of PluginInstance slice
 - Allow multiple instances of same plugin in one chain
-- Parameter persistence via *Plugin.Parameters.CurrentValue
+- Parameter persistence via PluginInstance.Parameters[]ParameterValue structure
+
+**Parameter Persistence Model**:
+```go
+type PluginInstance struct {
+    ID          uuid.UUID `json:"id"`
+    PluginInfo  plugins.PluginInfo `json:"pluginInfo"` // Which plugin to load
+    Parameters  []ParameterValue   `json:"parameters"` // Current parameter values
+}
+
+type ParameterValue struct {
+    Address      uint64  `json:"address"`      // From plugins.Parameter.Address (STABLE)
+    CurrentValue float32 `json:"currentValue"` // Saved value for this parameter
+    // Debug info (not serialized)  
+    DisplayName  string  `json:"-"`           // For debugging only
+}
+```
+
+**Rationale**: Plugin parameters are persisted by **address (uint64)** for stability and performance. Plugin updates can reorder parameters, but addresses remain stable. During deserialization, we introspect the plugin to get its parameter structure, then apply the saved CurrentValue to each parameter by Address. DisplayName is included for debugging but not serialized.
 
 **Chain Swapping**: Potentially supported between plugin-capable channels (AudioInput ↔ MidiInput ↔ Aux). 
 
@@ -271,7 +369,102 @@ type Ramping struct {
 
 **Rationale**: Eliminates complexity of separate generator channels while leveraging AVAudioEngine's robust time/pitch capabilities.
 
-## CRITICAL ARCHITECTURE GAPS - RESOLVED
+## CRITICAL TECHNICAL SPECIFICATIONS - NO AMBIGUITY
+
+### AVFoundation Engine Integration Sequence
+```go
+// Exact startup order to prevent crashes
+1. engine.New(audioSpec)         // Create but don't start
+2. engine.Prepare()              // Prepare resources
+3. masterChannel.Initialize()    // Create mainMixer → output connection  
+4. channels[].Initialize()       // Create input → mixer connections
+5. engine.createBasicRouting()   // If needed: input → mainMixer fallback
+6. engine.Start()               // Start only when audio graph complete
+```
+
+### Input Node Sharing Strategy
+```go
+// Key: "deviceUID:inputBus" → Value: AVAudioInputNode pointer
+inputNodes map[string]unsafe.Pointer
+
+// Multiple AudioInputChannels with same DeviceUID share the same input node
+node := engine.getOrCreateInputNode("USB-Audio-Device", 0)
+// Efficient: Only one input node per device, regardless of channel count
+```
+
+### Plugin Parameter Address-Based Persistence
+```go
+// Serialization: Save parameter values by address, not position
+type ParameterValue struct {
+    Address      uint64  // Stable identifier across plugin versions
+    CurrentValue float32 // User's setting for this parameter
+}
+
+// Deserialization: Introspect plugin → match by address → apply saved values
+plugin := pluginInfo.Introspect()
+for _, paramValue := range savedParameters {
+    if param := plugin.GetParameterByAddress(paramValue.Address); param != nil {
+        param.SetValue(paramValue.CurrentValue)
+    }
+}
+```
+
+### AuxChannel Deletion Race Prevention  
+```go
+// WRONG: Direct deletion causes races
+func (aux *AuxChannel) Delete() {
+    for _, ch := range engine.Channels {
+        ch.RemoveAuxSend(aux.ID) // Race condition with audio thread
+    }
+}
+
+// CORRECT: Queue through dispatcher
+func (aux *AuxChannel) Delete() {
+    engine.dispatcher.QueueAuxChannelDeletion(aux.ID) // Serialized operation
+}
+```
+
+### Output Device Change Strategy
+```go
+// Output device changes DO NOT require engine restart (AVAudioEngine limitation corrected)
+func (master *MasterChannel) SetOutputDevice(deviceUID string) error {
+    // 1. Validate device exists and is online
+    // 2. Queue through dispatcher (mute/volume/pan/plugin-params are direct, everything else dispatched)
+    // 3. AVAudioEngine can change output devices gracefully - no restart needed
+    return master.engine.dispatcher.QueueOutputDeviceChange(deviceUID)
+}
+```
+
+### Error Handler Threading Model
+```go
+type ErrorHandler interface {
+    HandleError(error) // Called on background thread via dispatcher - app must marshal to main thread
+}
+
+// Example consuming app implementation:
+func (h *MyErrorHandler) HandleError(err error) {
+    // Called on dispatcher background thread - dispatch to main queue for UI updates
+    dispatch.MainQueue.async {
+        h.showErrorDialog(err)
+    }
+}
+```
+
+### Dispatcher Queue Rules (Comprehensive)
+```go
+// ✅ DIRECT CALLS (Real-time safe, no dispatcher)
+channel.SetVolume(0.8)                    // Volume changes
+channel.SetPan(-0.5)                      // Panning changes  
+channel.SetAuxSendAmount(auxID, 0.3)      // Aux send levels
+pluginInstance.GetParameter(address)      // Plugin parameter reads
+pluginInstance.SetParameter(address, val) // Plugin parameter writes
+
+// ❌ DISPATCHER QUEUE (Everything else, including mute)
+channel.SetMute(true)                     // Mute is topology change
+errorHandler.HandleError(error)           // Error callbacks
+deviceMonitor.OnDeviceChange(event)       // Device state changes
+master.SetOutputDevice(deviceUID)         // Output device changes
+```
 
 ### 1. Device Assignment Strategy - RESOLVED
 **Device Binding**: Static device ID using Apple's native UID directly from devices package
@@ -320,6 +513,7 @@ type OutputDevice struct {
 **AVAudioEngine Integration**: Uses engine.mainMixerNode (automatically created, verified ✅)
 **Monitoring**: mainMixerNode supports metering via installTapOnBus with isMeteringEnabled (verified ✅)
 **Output Device Failure**: No automatic switching - consuming app responsibility
+**Output Device Changes**: ✅ **NO ENGINE RESTART REQUIRED** - AVAudioEngine handles output device changes gracefully
 
 ### 3. MIDI Routing Specification - RESOLVED
 ```go
@@ -351,8 +545,32 @@ type MidiInputChannel struct {
 ### 4. Timing & Synchronization - RESOLVED
 ```go
 type Engine struct {
+    ID                  uuid.UUID             `json:"id"`
+    Name                string                `json:"name"`
+    Spec                EngineSpec           `json:"spec"`
+    Channels            map[string]Channel   `json:"channels"` // String keys for JSON compatibility
+    Master              *MasterChannel       `json:"master"`
+    
+    // Runtime state (not serialized)
+    avEngine            *engine.Engine          `json:"-"`
+    inputNodes          map[string]unsafe.Pointer `json:"-"` // deviceUID:inputBus -> AVAudioInputNode
+    dispatcher          *Dispatcher             `json:"-"`
+    deviceMonitor       *DeviceMonitor          `json:"-"`
+    serializer          *Serializer             `json:"-"`
+    errorHandler        ErrorHandler            `json:"-"`
+    initializationState EngineInitState         `json:"-"`
+    running             bool                    `json:"-"`
+    
     // Timing Strategy: Unified buffer size across all channels
-    Spec EngineSpec  // Contains BufferSize only
+    // No external sync - engine provides timing source
+}
+
+// UUID Hybrid Pattern: 
+// - Struct fields use uuid.UUID for type safety and auto JSON serialization
+// - Map keys use string (via uuid.String()) for JSON compatibility
+// - All lookups convert UUID to string: channels[id.String()]
+// - Helper methods provide both UUID and string access
+```
     
     // No latency compensation - user/app adjusts buffer size for performance
     // No transport control - individual PlaybackChannel play/stop/pause only

@@ -3,6 +3,7 @@ package macaudio
 import (
 	"fmt"
 	"sync"
+	"unsafe"
 )
 
 // BaseChannel provides common functionality for all channel types
@@ -10,15 +11,18 @@ type BaseChannel struct {
 	id          string
 	channelType ChannelType
 	engine      *Engine
-	
+
 	// Audio processing
-	volume      float32
-	pan         float32
-	muted       bool
-	
+	volume float32
+	pan    float32
+	muted  bool
+
 	// Plugin chain
 	pluginChain *PluginChain
-	
+
+	// AVFoundation integration
+	outputMixer unsafe.Pointer // AVAudioMixerNode for this channel
+
 	// Connections
 	mu          sync.RWMutex
 	connections []Connection
@@ -31,8 +35,8 @@ func NewBaseChannel(id string, channelType ChannelType, engine *Engine) *BaseCha
 		id:          id,
 		channelType: channelType,
 		engine:      engine,
-		volume:      1.0,  // Default volume
-		pan:         0.0,  // Center pan
+		volume:      1.0, // Default volume
+		pan:         0.0, // Center pan
 		muted:       false,
 		pluginChain: NewPluginChain(),
 		connections: make([]Connection, 0),
@@ -54,11 +58,11 @@ func (bc *BaseChannel) GetType() ChannelType {
 func (bc *BaseChannel) Start() error {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
-	
+
 	if bc.isRunning {
 		return nil // Already running
 	}
-	
+
 	bc.isRunning = true
 	return nil
 }
@@ -67,11 +71,11 @@ func (bc *BaseChannel) Start() error {
 func (bc *BaseChannel) Stop() error {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
-	
+
 	if !bc.isRunning {
 		return nil // Already stopped
 	}
-	
+
 	bc.isRunning = false
 	return nil
 }
@@ -87,14 +91,14 @@ func (bc *BaseChannel) IsRunning() bool {
 func (bc *BaseChannel) ConnectTo(target Channel, bus int) error {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
-	
+
 	connection := Connection{
 		SourceChannel: bc.id,
 		TargetChannel: target.GetID(),
 		SourceBus:     0, // Most channels have single output bus
 		TargetBus:     bus,
 	}
-	
+
 	bc.connections = append(bc.connections, connection)
 	return nil
 }
@@ -103,7 +107,7 @@ func (bc *BaseChannel) ConnectTo(target Channel, bus int) error {
 func (bc *BaseChannel) DisconnectFrom(target Channel, bus int) error {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
-	
+
 	targetID := target.GetID()
 	for i, conn := range bc.connections {
 		if conn.TargetChannel == targetID && conn.TargetBus == bus {
@@ -113,7 +117,7 @@ func (bc *BaseChannel) DisconnectFrom(target Channel, bus int) error {
 			return nil
 		}
 	}
-	
+
 	return fmt.Errorf("connection to %s (bus %d) not found", targetID, bus)
 }
 
@@ -121,7 +125,7 @@ func (bc *BaseChannel) DisconnectFrom(target Channel, bus int) error {
 func (bc *BaseChannel) GetConnections() []Connection {
 	bc.mu.RLock()
 	defer bc.mu.RUnlock()
-	
+
 	connections := make([]Connection, len(bc.connections))
 	copy(connections, bc.connections)
 	return connections
@@ -147,13 +151,17 @@ func (bc *BaseChannel) SetVolume(volume float32) error {
 	if volume < 0.0 || volume > 1.0 {
 		return fmt.Errorf("volume must be between 0.0 and 1.0")
 	}
-	
+
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 	bc.volume = volume
-	
-	// TODO: Apply to actual audio node
-	
+
+	// Apply to actual output mixer node if available
+	if bc.outputMixer != nil {
+		// Note: Volume control requires AVAudioMixerNode-specific bindings
+		// For now, we store the value. Future enhancement: implement mixer volume control
+	}
+
 	return nil
 }
 
@@ -169,13 +177,17 @@ func (bc *BaseChannel) SetPan(pan float32) error {
 	if pan < -1.0 || pan > 1.0 {
 		return fmt.Errorf("pan must be between -1.0 and 1.0")
 	}
-	
+
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 	bc.pan = pan
-	
-	// TODO: Apply to actual audio node
-	
+
+	// Apply to actual output mixer node if available
+	if bc.outputMixer != nil {
+		// Note: Pan control requires AVAudioMixerNode-specific bindings
+		// For now, we store the value. Future enhancement: implement mixer pan control
+	}
+
 	return nil
 }
 
@@ -191,9 +203,13 @@ func (bc *BaseChannel) SetMute(muted bool) error {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 	bc.muted = muted
-	
-	// TODO: Apply to actual audio node
-	
+
+	// Apply to actual output mixer node if available
+	if bc.outputMixer != nil {
+		// Note: Mute control requires AVAudioMixerNode-specific bindings
+		// For now, we store the value. Future enhancement: implement mixer mute control
+	}
+
 	return nil
 }
 
@@ -208,10 +224,10 @@ func (bc *BaseChannel) GetMute() (bool, error) {
 func (bc *BaseChannel) GetState() ChannelState {
 	bc.mu.RLock()
 	defer bc.mu.RUnlock()
-	
+
 	connections := make([]Connection, len(bc.connections))
 	copy(connections, bc.connections)
-	
+
 	return ChannelState{
 		ID:          bc.id,
 		Type:        bc.channelType,
@@ -227,15 +243,15 @@ func (bc *BaseChannel) GetState() ChannelState {
 func (bc *BaseChannel) SetState(state ChannelState) error {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
-	
+
 	bc.volume = state.Volume
 	bc.pan = state.Pan
 	bc.muted = state.Muted
-	
+
 	connections := make([]Connection, len(state.Connections))
 	copy(connections, state.Connections)
 	bc.connections = connections
-	
+
 	// Restore plugin chain
 	return bc.pluginChain.SetState(state.PluginChain)
 }
@@ -243,28 +259,33 @@ func (bc *BaseChannel) SetState(state ChannelState) error {
 // MasterChannel represents the main mixer output channel
 type MasterChannel struct {
 	*BaseChannel
-	
+
 	// Master-specific functionality
-	masterVolume float32
+	masterVolume   float32
 	limiterEnabled bool
 }
 
 // AudioInputConfig holds configuration for audio input channels
 type AudioInputConfig struct {
-	DeviceUID       string
-	InputBus        int
-	MonitoringLevel float32
+	DeviceUID string // Audio device unique identifier from devices package
+	InputBus  int    // Physical input channel of the audio device (0=channel 1, 1=channel 2, etc.)
+	// Maps directly to AVAudioInputNode's output bus number
+	// DeviceUID + InputBus combination uniquely identifies an audio source
+	MonitoringLevel float32 // Input monitoring level (0.0-1.0)
 }
 
 // AudioInputChannel represents an audio input channel
 type AudioInputChannel struct {
 	*BaseChannel
-	
+
 	// Audio input specific
 	config          AudioInputConfig
 	deviceUID       string
 	inputBus        int
 	monitoringLevel float32
+
+	// AVFoundation integration
+	inputNode unsafe.Pointer // Shared AVAudioInputNode (from engine.inputNodes)
 }
 
 // MidiInputConfig holds configuration for MIDI input channels
@@ -276,7 +297,7 @@ type MidiInputConfig struct {
 // MidiInputChannel represents a MIDI input channel
 type MidiInputChannel struct {
 	*BaseChannel
-	
+
 	// MIDI input specific
 	config    MidiInputConfig
 	deviceUID string
@@ -285,17 +306,17 @@ type MidiInputChannel struct {
 
 // PlaybackConfig holds configuration for playback channels
 type PlaybackConfig struct {
-	FilePath     string
-	LoopEnabled  bool
-	AutoStart    bool
-	FadeIn       float32
-	FadeOut      float32
+	FilePath    string
+	LoopEnabled bool
+	AutoStart   bool
+	FadeIn      float32
+	FadeOut     float32
 }
 
 // PlaybackChannel represents an audio file playback channel
 type PlaybackChannel struct {
 	*BaseChannel
-	
+
 	// Playback specific
 	config      PlaybackConfig
 	filePath    string
@@ -303,11 +324,11 @@ type PlaybackChannel struct {
 	autoStart   bool
 	fadeIn      float32
 	fadeOut     float32
-	
+
 	// Playback state
-	isPlaying   bool
-	isPaused    bool
-	position    float64 // Current position in seconds
+	isPlaying bool
+	isPaused  bool
+	position  float64 // Current position in seconds
 }
 
 // AuxConfig holds configuration for auxiliary send channels
@@ -320,7 +341,7 @@ type AuxConfig struct {
 // AuxChannel represents an auxiliary send/return channel
 type AuxChannel struct {
 	*BaseChannel
-	
+
 	// Aux specific
 	config      AuxConfig
 	sendLevel   float32
@@ -331,7 +352,7 @@ type AuxChannel struct {
 // NewMasterChannel creates a new master channel
 func NewMasterChannel(id string, engine *Engine) (*MasterChannel, error) {
 	baseChannel := NewBaseChannel(id, ChannelTypeMaster, engine)
-	
+
 	return &MasterChannel{
 		BaseChannel:    baseChannel,
 		masterVolume:   1.0,
@@ -342,20 +363,76 @@ func NewMasterChannel(id string, engine *Engine) (*MasterChannel, error) {
 // NewAudioInputChannel creates a new audio input channel
 func NewAudioInputChannel(id string, config AudioInputConfig, engine *Engine) (*AudioInputChannel, error) {
 	baseChannel := NewBaseChannel(id, ChannelTypeAudioInput, engine)
-	
-	return &AudioInputChannel{
+
+	// Get or create shared input node for this device/bus combination
+	inputNode, err := engine.getOrCreateInputNode(config.DeviceUID, config.InputBus)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get input node: %w", err)
+	}
+
+	// Create output mixer node for this channel
+	avEngine := engine.getAVEngine()
+	outputMixer, err := avEngine.MainMixerNode() // For now, use main mixer as output
+	if err != nil {
+		return nil, fmt.Errorf("failed to get output mixer: %w", err)
+	}
+
+	channel := &AudioInputChannel{
 		BaseChannel:     baseChannel,
 		config:          config,
 		deviceUID:       config.DeviceUID,
 		inputBus:        config.InputBus,
 		monitoringLevel: config.MonitoringLevel,
-	}, nil
+		inputNode:       inputNode,
+	}
+
+	// Set the output mixer in base channel
+	baseChannel.outputMixer = outputMixer
+
+	return channel, nil
+}
+
+// Start starts the audio input channel and creates AVFoundation connections
+func (aic *AudioInputChannel) Start() error {
+	// Call base channel start first
+	if err := aic.BaseChannel.Start(); err != nil {
+		return err
+	}
+
+	// Connect input node to output mixer via AVFoundation
+	avEngine := aic.engine.getAVEngine()
+
+	// Connect: inputNode[inputBus] -> outputMixer[0]
+	err := avEngine.Connect(aic.inputNode, aic.outputMixer, aic.inputBus, 0)
+	if err != nil {
+		return fmt.Errorf("failed to connect input to mixer: %w", err)
+	}
+
+	// Start AVFoundation engine if audio graph is ready
+	if err := aic.engine.startAVEngineIfReady(); err != nil {
+		return fmt.Errorf("failed to start audio engine: %w", err)
+	}
+
+	return nil
+}
+
+// Stop stops the audio input channel and disconnects AVFoundation connections
+func (aic *AudioInputChannel) Stop() error {
+	// Disconnect from output mixer
+	if aic.outputMixer != nil {
+		avEngine := aic.engine.getAVEngine()
+		// Disconnect input bus 0 of the output mixer (where this channel connects to)
+		avEngine.DisconnectNodeInput(aic.outputMixer, 0)
+	}
+
+	// Call base channel stop
+	return aic.BaseChannel.Stop()
 }
 
 // NewMidiInputChannel creates a new MIDI input channel
 func NewMidiInputChannel(id string, config MidiInputConfig, engine *Engine) (*MidiInputChannel, error) {
 	baseChannel := NewBaseChannel(id, ChannelTypeMidiInput, engine)
-	
+
 	return &MidiInputChannel{
 		BaseChannel: baseChannel,
 		config:      config,
@@ -367,7 +444,7 @@ func NewMidiInputChannel(id string, config MidiInputConfig, engine *Engine) (*Mi
 // NewPlaybackChannel creates a new playback channel
 func NewPlaybackChannel(id string, config PlaybackConfig, engine *Engine) (*PlaybackChannel, error) {
 	baseChannel := NewBaseChannel(id, ChannelTypePlayback, engine)
-	
+
 	return &PlaybackChannel{
 		BaseChannel: baseChannel,
 		config:      config,
@@ -385,7 +462,7 @@ func NewPlaybackChannel(id string, config PlaybackConfig, engine *Engine) (*Play
 // NewAuxChannel creates a new auxiliary channel
 func NewAuxChannel(id string, config AuxConfig, engine *Engine) (*AuxChannel, error) {
 	baseChannel := NewBaseChannel(id, ChannelTypeAux, engine)
-	
+
 	return &AuxChannel{
 		BaseChannel: baseChannel,
 		config:      config,
@@ -402,13 +479,13 @@ func (mc *MasterChannel) SetMasterVolume(volume float32) error {
 	if volume < 0.0 || volume > 1.0 {
 		return fmt.Errorf("master volume must be between 0.0 and 1.0")
 	}
-	
+
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	mc.masterVolume = volume
-	
+
 	// TODO: Apply to actual master mixer
-	
+
 	return nil
 }
 
@@ -424,7 +501,7 @@ func (mc *MasterChannel) SetLimiterEnabled(enabled bool) {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	mc.limiterEnabled = enabled
-	
+
 	// TODO: Apply to actual limiter
 }
 
@@ -441,16 +518,16 @@ func (mc *MasterChannel) IsLimiterEnabled() bool {
 func (pc *PlaybackChannel) Play() error {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
-	
+
 	if pc.isPlaying && !pc.isPaused {
 		return nil // Already playing
 	}
-	
+
 	pc.isPlaying = true
 	pc.isPaused = false
-	
+
 	// TODO: Start actual audio playback
-	
+
 	return nil
 }
 
@@ -458,15 +535,15 @@ func (pc *PlaybackChannel) Play() error {
 func (pc *PlaybackChannel) Pause() error {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
-	
+
 	if !pc.isPlaying || pc.isPaused {
 		return nil // Not playing or already paused
 	}
-	
+
 	pc.isPaused = true
-	
+
 	// TODO: Pause actual audio playback
-	
+
 	return nil
 }
 
@@ -474,13 +551,13 @@ func (pc *PlaybackChannel) Pause() error {
 func (pc *PlaybackChannel) StopPlayback() error {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
-	
+
 	pc.isPlaying = false
 	pc.isPaused = false
 	pc.position = 0.0
-	
+
 	// TODO: Stop actual audio playback
-	
+
 	return nil
 }
 
@@ -496,13 +573,13 @@ func (pc *PlaybackChannel) SetPosition(position float64) error {
 	if position < 0 {
 		return fmt.Errorf("position cannot be negative")
 	}
-	
+
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 	pc.position = position
-	
+
 	// TODO: Seek in actual audio playback
-	
+
 	return nil
 }
 
@@ -513,13 +590,13 @@ func (ac *AuxChannel) SetSendLevel(level float32) error {
 	if level < 0.0 || level > 1.0 {
 		return fmt.Errorf("send level must be between 0.0 and 1.0")
 	}
-	
+
 	ac.mu.Lock()
 	defer ac.mu.Unlock()
 	ac.sendLevel = level
-	
+
 	// TODO: Apply to actual aux send
-	
+
 	return nil
 }
 
@@ -535,13 +612,13 @@ func (ac *AuxChannel) SetReturnLevel(level float32) error {
 	if level < 0.0 || level > 1.0 {
 		return fmt.Errorf("return level must be between 0.0 and 1.0")
 	}
-	
+
 	ac.mu.Lock()
 	defer ac.mu.Unlock()
 	ac.returnLevel = level
-	
+
 	// TODO: Apply to actual aux return
-	
+
 	return nil
 }
 
@@ -558,20 +635,20 @@ func (ac *AuxChannel) Cleanup() error {
 	if err := ac.BaseChannel.Stop(); err != nil {
 		return fmt.Errorf("failed to stop aux channel during cleanup: %w", err)
 	}
-	
+
 	// Clear all connections
 	ac.mu.Lock()
 	ac.connections = make([]Connection, 0)
 	ac.mu.Unlock()
-	
+
 	// Reset to default values
 	ac.sendLevel = 0.0
 	ac.returnLevel = 0.0
-	
+
 	// Unload all plugins in the chain
 	for _, instance := range ac.pluginChain.GetInstances() {
 		instance.Unload()
 	}
-	
+
 	return nil
 }

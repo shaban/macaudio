@@ -6,21 +6,393 @@ This document identifies documentation requirements with far-reaching implicatio
 
 ## Critical Documentation Requirements
 
-### 1. Engine Lifecycle and Threading Model ⚠️ CRITICAL
+### 1. Programmatic Engine Initialization ⚠️ CRITICAL
 
-**Why Critical**: The dispatcher pattern for audio engine operations is non-obvious and critical for real-time performance.
+**Why Critical**: The programmatic initialization approach requires clear developer guidance to prevent common mistakes and ensure proper usage patterns.
 
 **Documentation Scope**:
-- AVAudioEngine thread-safety requirements  
-- Dispatcher queue serialization for topology changes
-- Sub-300ms glitch-free operation guarantees
+- Engine lifecycle states and validation
+- Incremental channel creation workflow
+- Meaningful error messages and resolution steps
+- Serialization/deserialization at any initialization stage
+- Common initialization patterns and best practices
+
+**Example Issues Without Documentation**:
+- Confusion about when engine can be started
+- Not understanding why Start() fails with specific channels
+- Improper usage of serialization/deserialization workflow
+- Missing device validation steps
+
+```markdown
+# Programmatic Engine Initialization
+
+MacAudio uses a **programmatic initialization** approach that allows building engines incrementally while providing specific validation feedback.
+
+## Core Initialization Pattern
+
+### Step 1: Create Engine with Minimal Configuration
+```go
+engine, err := macaudio.NewEngine(macaudio.EngineConfig{
+    BufferSize:      512,                    // Required: 64, 128, 256, 512, or 1024
+    OutputDeviceUID: "BuiltInSpeakerDevice", // Required: must be online
+    ErrorHandler:    &MyErrorHandler{},     // Optional: defaults provided
+})
+if err != nil {
+    // Handle configuration errors:
+    // - Invalid buffer size
+    // - Output device not found or offline
+    // - Device enumeration failure
+}
+```
+
+### Step 2: Add Channels Incrementally
+```go
+// Add audio input channel
+audioChannel, err := engine.CreateAudioInputChannel("microphone", AudioInputConfig{
+    DeviceUID: "USB-Audio-Interface",
+    Volume:    0.8,
+    Pan:       0.0,
+})
+if err != nil {
+    // Handle channel creation errors:
+    // - Device not found
+    // - Device offline
+    // - Invalid configuration
+}
+
+// Add MIDI input channel  
+midiChannel, err := engine.CreateMidiInputChannel("piano", MidiInputConfig{
+    DeviceUID: "Digital-Piano-MIDI",
+})
+if err != nil {
+    // Handle MIDI channel errors
+}
+
+// Load soundbank for MIDI channel (REQUIRED for audio output)
+err = midiChannel.LoadSoundbank("/System/Library/Audio/Sounds/Banks/default.dls")
+if err != nil {
+    // Handle soundbank loading errors
+}
+```
+
+### Step 3: Start Engine with Validation
+```go
+if err := engine.Start(); err != nil {
+    // Engine provides specific error guidance:
+    switch {
+    case strings.Contains(err.Error(), "no audio channels"):
+        // Create at least one AudioInputChannel, MidiInputChannel, or PlaybackChannel
+    case strings.Contains(err.Error(), "requires soundbank"):
+        // Load soundbank for MIDI channels
+    case strings.Contains(err.Error(), "device offline"):
+        // Check device connections and online status
+    case strings.Contains(err.Error(), "incomplete audio graph"):
+        // Verify all channels are properly configured
+    default:
+        // Handle other initialization errors
+    }
+}
+```
+
+## Engine Lifecycle States
+
+```go
+type EngineInitState int
+const (
+    EngineCreated     // AVFoundation engine created, master channel ready
+    MasterReady       // Master channel initialized (automatic)
+    ChannelsReady     // At least one audio channel exists
+    AudioGraphReady   // Complete audio path validated, ready to start
+    EngineRunning     // AVFoundation engine started successfully
+)
+```
+
+### State Transition Rules
+- **EngineCreated → MasterReady**: Automatic (master channel created in NewEngine)
+- **MasterReady → ChannelsReady**: When first audio channel is added
+- **ChannelsReady → AudioGraphReady**: When all channels are ready (devices online, soundbanks loaded)
+- **AudioGraphReady → EngineRunning**: When Start() is successfully called
+
+## Common Initialization Patterns
+
+### Simple Audio Input Setup
+```go
+engine, _ := macaudio.NewEngine(macaudio.EngineConfig{
+    BufferSize:      256,
+    OutputDeviceUID: "BuiltInSpeakerDevice",
+})
+
+audioChannel, _ := engine.CreateAudioInputChannel("mic", AudioInputConfig{
+    DeviceUID: "BuiltInMicrophone",
+})
+
+// Ready to start - minimal audio path exists
+engine.Start()
+```
+
+### MIDI Instrument Setup
+```go
+engine, _ := macaudio.NewEngine(config)
+
+midiChannel, _ := engine.CreateMidiInputChannel("piano", MidiInputConfig{
+    DeviceUID: "Digital-Piano",
+})
+
+// CRITICAL: Must load soundbank for audio output
+midiChannel.LoadSoundbank("/path/to/piano.dls")
+
+// Now ready to start
+engine.Start()
+```
+
+### Multi-Channel Setup
+```go
+engine, _ := macaudio.NewEngine(config)
+
+// Add multiple input sources
+micChannel, _ := engine.CreateAudioInputChannel("microphone", audioConfig)
+guitarChannel, _ := engine.CreateAudioInputChannel("guitar", guitarConfig)
+pianoChannel, _ := engine.CreateMidiInputChannel("piano", pianoConfig)
+
+// Add aux channel for reverb
+reverbAux, _ := engine.CreateAuxChannel("reverb", auxConfig)
+
+// Configure aux sends
+micChannel.AddAuxSend(reverbAux.ID(), 0.3, false) // 30% post-fader send
+
+// Load MIDI soundbank
+pianoChannel.LoadSoundbank("/path/to/piano.dls")
+
+// Start with complete setup
+engine.Start()
+```
+
+## Serialization Workflow
+
+### Save Engine State (Any Initialization Stage)
+```go
+// Can serialize at any point - even before Start()
+engineData, err := engine.Serialize()
+if err != nil {
+    // Handle serialization error
+}
+
+// Save to file
+err = os.WriteFile("session.json", engineData, 0644)
+```
+
+### Restore Engine State
+```go
+// Load from file
+sessionData, err := os.ReadFile("session.json")
+if err != nil {
+    // Handle file error
+}
+
+// Deserialize engine
+engine, err := macaudio.DeserializeEngine(sessionData)
+if err != nil {
+    // Handle deserialization errors:
+    // - Invalid JSON format
+    // - Unknown plugin references
+    // - Invalid device UIDs
+}
+
+// Check if engine is ready to start
+if engine.CanStart() {
+    engine.Start()
+} else {
+    // Handle devices that went offline since serialization
+    offlineChannels := engine.GetOfflineChannels()
+    for _, channel := range offlineChannels {
+        // Prompt user to reselect devices or disable channels
+    }
+}
+```
+
+## Error Handling During Initialization
+
+### Device-Related Errors
+```go
+// Output device validation (in NewEngine)
+if err := engine.ValidateOutputDevice(); err != nil {
+    // Specific errors:
+    // - "output device with UID 'xyz' not found"
+    // - "output device 'xyz' is not online"
+    
+    // Resolution: Use devices.GetAudio() to list available devices
+    devices, _ := devices.GetAudio()
+    for _, device := range devices {
+        if device.IsOnline {
+            fmt.Printf("Available: %s (%s)\n", device.Name, device.UID)
+        }
+    }
+}
+
+// Input device validation (per channel)
+if err := channel.ValidateInputDevice(); err != nil {
+    // Handle offline input devices
+    // User can choose to continue without this channel
+}
+```
+
+### MIDI Channel Errors
+```go
+// MIDI channels require soundbank for audio output
+if err := midiChannel.LoadSoundbank(path); err != nil {
+    // Common errors:
+    // - "soundbank file not found"
+    // - "invalid soundbank format"
+    // - "soundbank loading failed"
+    
+    // Provide fallback soundbank
+    systemSoundbank := "/System/Library/Audio/Sounds/Banks/default.dls"
+    midiChannel.LoadSoundbank(systemSoundbank)
+}
+```
+
+### Plugin-Related Errors
+```go
+// Plugin loading during deserialization
+if err := pluginChain.LoadPlugins(); err != nil {
+    // Handle plugin failures:
+    // - Plugin not installed
+    // - Plugin version incompatible
+    // - Plugin loading timeout
+    
+    // Get failed plugins
+    failedPlugins := pluginChain.GetFailedPlugins()
+    for _, plugin := range failedPlugins {
+        fmt.Printf("Failed to load: %s (%s)\n", plugin.Name, plugin.Error)
+        // Option to remove failed plugin or find replacement
+    }
+}
+```
+
+## Best Practices
+
+### 1. Always Validate Configuration
+```go
+// Check configuration before engine creation
+if err := macaudio.ValidateConfig(config); err != nil {
+    // Fix configuration issues before NewEngine()
+}
+```
+
+### 2. Handle Device Changes Gracefully
+```go
+// Set up device change notifications
+engine.SetDeviceChangeHandler(func(event DeviceChangeEvent) {
+    if event.Type == DeviceOffline {
+        // Notify user, provide device reselection UI
+    }
+})
+```
+
+### 3. Provide User Feedback
+```go
+// Show initialization progress
+engine.SetInitializationCallback(func(state EngineInitState, progress float32) {
+    switch state {
+    case ChannelsReady:
+        fmt.Printf("Channels created: %.0f%%\n", progress*100)
+    case AudioGraphReady:
+        fmt.Printf("Audio graph validated: %.0f%%\n", progress*100)
+    }
+})
+```
+
+### 4. Graceful Degradation
+```go
+// Continue with partial setup if some devices are offline
+engine.SetIgnoreOfflineDevices(true)
+
+// Start engine even if some channels fail
+if err := engine.Start(); err != nil {
+    // Check if any channels are working
+    workingChannels := engine.GetWorkingChannels()
+    if len(workingChannels) > 0 {
+        fmt.Printf("Started with %d working channels\n", len(workingChannels))
+    }
+}
+```
+```
+
+### 1. Engine Lifecycle and AVFoundation Startup Sequence ⚠️ CRITICAL
+
+**Why Critical**: The AVFoundation engine startup sequence is non-obvious and critical for preventing runtime crashes.
+
+**Documentation Scope**:
+- Exact startup sequence: Prepare → Initialize Channels → Create Basic Routing → Start
+- AVAudioEngine requirements: "inputNode != nullptr || outputNode != nullptr"
+- Node sharing strategy for device efficiency
 - When to use direct calls vs. dispatcher queue
 - **AuxSend cleanup when deleting AuxChannels**
 
 **Example Issues Without Documentation**:
-- Deadlocks from calling AVAudioEngine methods on wrong thread
+- Engine startup failures with "inputNode != nullptr || outputNode != nullptr"
+- Memory leaks from unshared input nodes
+- Race conditions in AuxChannel deletion
 - Audio glitches from unserialized topology changes
-- Race conditions in plugin bypass operations
+
+```markdown
+# Engine Lifecycle and AVFoundation Integration
+
+## Critical Startup Sequence
+
+MacAudio requires a specific startup sequence to satisfy AVFoundation requirements:
+
+### Phase 1: AVFoundation Engine Creation
+```go
+// ✅ CORRECT - Create but don't start yet
+avEngine, err := engine.New(audioSpec)
+avEngine.Prepare() // Prepare resources but don't start audio
+```
+
+### Phase 2: Master Channel Initialization
+```go
+// ✅ CORRECT - Initialize master channel first
+engine.Master.Initialize(avEngine) // Creates mainMixer → output connection
+```
+
+### Phase 3: Channel Initialization
+```go
+// ✅ CORRECT - Initialize all channels
+for _, channel := range engine.Channels {
+    channel.Initialize(avEngine, dispatcher) // Creates input → mixer connections
+}
+```
+
+### Phase 4: Basic Routing (if needed)
+```go
+// ✅ CORRECT - Ensure minimum connections exist
+if onlyMasterChannelExists {
+    engine.createBasicRouting() // input → mainMixer connection
+}
+```
+
+### Phase 5: AVFoundation Engine Start
+```go
+// ✅ CORRECT - Start only after complete audio graph
+avEngine.Start() // Now safe - all connections exist
+```
+
+## Node Sharing Strategy
+
+Multiple AudioInputChannels using the same device share input nodes:
+
+```go
+// ✅ CORRECT - Shared input nodes
+inputNode := engine.getOrCreateInputNode("device-uid", 0)
+// Multiple channels can use the same inputNode safely
+```
+
+## Why This Sequence Matters:
+1. **AVFoundation Requirement**: Engine needs complete audio graph before starting
+2. **Resource Efficiency**: Input nodes are shared among channels
+3. **Thread Safety**: All topology changes are serialized through dispatcher
+4. **Error Prevention**: Prevents "no input/output nodes" runtime crashes
+```
 
 ```markdown
 # Engine Threading Model

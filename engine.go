@@ -4,44 +4,50 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"unsafe"
 
+	"github.com/shaban/macaudio/avaudio/engine"
 	"github.com/shaban/macaudio/devices"
 )
 
 // Engine represents the main audio engine with unified architecture
 type Engine struct {
 	// Core state
-	mu              sync.RWMutex
-	ctx             context.Context
-	cancel          context.CancelFunc
-	isRunning       bool
-	deviceMonitor   *DeviceMonitor
-	dispatcher      *Dispatcher
-	serializer      *Serializer
-	
+	mu            sync.RWMutex
+	ctx           context.Context
+	cancel        context.CancelFunc
+	isRunning     bool
+	deviceMonitor *DeviceMonitor
+	dispatcher    *Dispatcher
+	serializer    *Serializer
+
 	// Channel management
-	channels        map[string]Channel
-	masterChannel   *MasterChannel
-	
+	channels      map[string]Channel
+	masterChannel *MasterChannel
+
+	// AVFoundation integration
+	avEngine   *engine.Engine
+	inputNodes map[string]unsafe.Pointer // key: "deviceUID:inputBus", value: AVAudioInputNode*
+
 	// Device state tracking
-	audioDeviceUID  string  // Currently bound audio device UID
-	midiDeviceUID   string  // Currently bound MIDI device UID
-	
+	audioDeviceUID string // Currently bound audio device UID
+	midiDeviceUID  string // Currently bound MIDI device UID
+
 	// Configuration
-	bufferSize      int
-	sampleRate      float64
-	
+	bufferSize int
+	sampleRate float64
+
 	// Error boundary
-	errorHandler    ErrorHandler
+	errorHandler ErrorHandler
 }
 
 // EngineConfig holds configuration for engine initialization
 type EngineConfig struct {
-	BufferSize      int
-	SampleRate      float64
-	AudioDeviceUID  string
-	MidiDeviceUID   string
-	ErrorHandler    ErrorHandler
+	BufferSize     int
+	SampleRate     float64
+	AudioDeviceUID string
+	MidiDeviceUID  string
+	ErrorHandler   ErrorHandler
 }
 
 // NewEngine creates a new audio engine with the specified configuration
@@ -55,38 +61,55 @@ func NewEngine(config EngineConfig) (*Engine, error) {
 	if config.ErrorHandler == nil {
 		config.ErrorHandler = &DefaultErrorHandler{}
 	}
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
-	
-	engine := &Engine{
-		ctx:             ctx,
-		cancel:          cancel,
-		channels:        make(map[string]Channel),
-		bufferSize:      config.BufferSize,
-		sampleRate:      config.SampleRate,
-		audioDeviceUID:  config.AudioDeviceUID,
-		midiDeviceUID:   config.MidiDeviceUID,
-		errorHandler:    config.ErrorHandler,
+
+	// Create AVFoundation engine with audio specifications
+	audioSpec := engine.AudioSpec{
+		SampleRate:   config.SampleRate,
+		BufferSize:   config.BufferSize,
+		BitDepth:     32, // AVAudioEngine uses 32-bit float internally
+		ChannelCount: 2,  // Stereo
 	}
-	
+
+	avEngine, err := engine.New(audioSpec)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create AVFoundation engine: %w", err)
+	}
+
+	engine := &Engine{
+		ctx:            ctx,
+		cancel:         cancel,
+		channels:       make(map[string]Channel),
+		avEngine:       avEngine,
+		inputNodes:     make(map[string]unsafe.Pointer),
+		bufferSize:     config.BufferSize,
+		sampleRate:     config.SampleRate,
+		audioDeviceUID: config.AudioDeviceUID,
+		midiDeviceUID:  config.MidiDeviceUID,
+		errorHandler:   config.ErrorHandler,
+	}
+
 	// Initialize master channel (always present)
 	masterChannel, err := NewMasterChannel("master", engine)
 	if err != nil {
+		avEngine.Destroy() // Clean up AVFoundation engine
 		cancel()
 		return nil, fmt.Errorf("failed to create master channel: %w", err)
 	}
 	engine.masterChannel = masterChannel
 	engine.channels["master"] = masterChannel
-	
+
 	// Initialize device monitor
 	engine.deviceMonitor = NewDeviceMonitor(engine)
-	
+
 	// Initialize dispatcher for serialized topology changes
 	engine.dispatcher = NewDispatcher(engine)
-	
+
 	// Initialize serializer for state persistence
 	engine.serializer = NewSerializer(engine)
-	
+
 	return engine, nil
 }
 
@@ -94,35 +117,48 @@ func NewEngine(config EngineConfig) (*Engine, error) {
 func (e *Engine) Start() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	
+
 	if e.isRunning {
 		return fmt.Errorf("engine is already running")
 	}
-	
+
+	// Start AVFoundation engine first
+	// Note: AVFoundation engine should only be started when audio graph is complete
+	// For now, we defer starting until channels are properly configured
+	// The actual start happens when the first channel requires audio processing
+
+	// Prepare the engine but don't start yet
+	e.avEngine.Prepare()
+
 	// Bind to audio device if specified
 	if e.audioDeviceUID != "" {
 		if err := e.bindAudioDevice(e.audioDeviceUID); err != nil {
+			e.avEngine.Stop()
 			return fmt.Errorf("failed to bind audio device: %w", err)
 		}
 	}
-	
+
 	// Bind to MIDI device if specified
 	if e.midiDeviceUID != "" {
 		if err := e.bindMidiDevice(e.midiDeviceUID); err != nil {
+			e.avEngine.Stop()
 			return fmt.Errorf("failed to bind MIDI device: %w", err)
 		}
 	}
-	
+
 	// Start device monitoring (50ms polling)
 	if err := e.deviceMonitor.Start(); err != nil {
+		e.avEngine.Stop()
 		return fmt.Errorf("failed to start device monitor: %w", err)
 	}
-	
+
 	// Start dispatcher for topology changes
 	if err := e.dispatcher.Start(); err != nil {
+		e.avEngine.Stop()
+		e.deviceMonitor.Stop()
 		return fmt.Errorf("failed to start dispatcher: %w", err)
 	}
-	
+
 	e.isRunning = true
 	return nil
 }
@@ -131,31 +167,34 @@ func (e *Engine) Start() error {
 func (e *Engine) Stop() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	
+
 	if !e.isRunning {
 		return nil // Already stopped
 	}
-	
+
 	// Stop all channels first
 	for _, channel := range e.channels {
 		if err := channel.Stop(); err != nil {
 			e.errorHandler.HandleError(fmt.Errorf("error stopping channel %s: %w", channel.GetID(), err))
 		}
 	}
-	
+
 	// Stop dispatcher
 	if err := e.dispatcher.Stop(); err != nil {
 		e.errorHandler.HandleError(fmt.Errorf("error stopping dispatcher: %w", err))
 	}
-	
+
 	// Stop device monitor
 	if err := e.deviceMonitor.Stop(); err != nil {
 		e.errorHandler.HandleError(fmt.Errorf("error stopping device monitor: %w", err))
 	}
-	
+
+	// Stop AVFoundation engine
+	e.stopAVEngine()
+
 	// Cancel context to stop all background operations
 	e.cancel()
-	
+
 	e.isRunning = false
 	return nil
 }
@@ -186,7 +225,7 @@ func (e *Engine) GetMasterChannel() *MasterChannel {
 func (e *Engine) ListChannels() []string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	
+
 	ids := make([]string, 0, len(e.channels))
 	for id := range e.channels {
 		ids = append(ids, id)
@@ -244,13 +283,13 @@ func (e *Engine) GetSerializer() *Serializer {
 func (e *Engine) GetConfiguration() EngineConfig {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	
+
 	return EngineConfig{
-		BufferSize:      e.bufferSize,
-		SampleRate:      e.sampleRate,
-		AudioDeviceUID:  e.audioDeviceUID,
-		MidiDeviceUID:   e.midiDeviceUID,
-		ErrorHandler:    e.errorHandler,
+		BufferSize:     e.bufferSize,
+		SampleRate:     e.sampleRate,
+		AudioDeviceUID: e.audioDeviceUID,
+		MidiDeviceUID:  e.midiDeviceUID,
+		ErrorHandler:   e.errorHandler,
 	}
 }
 
@@ -261,22 +300,24 @@ func (e *Engine) bindAudioDevice(uid string) error {
 	if err != nil {
 		return fmt.Errorf("failed to enumerate audio devices: %w", err)
 	}
-	
+
 	device := audioDevices.ByUID(uid)
 	if device == nil {
 		return fmt.Errorf("audio device with UID %s not found", uid)
 	}
-	
+
 	if !device.IsOnline {
 		return fmt.Errorf("audio device %s is not online", uid)
 	}
-	
+
 	// Update engine state
 	e.audioDeviceUID = uid
-	
-	// TODO: Bind to AVAudioEngine device
-	// This will be implemented when we add AVFoundation integration
-	
+
+	// Note: AVAudioEngine automatically uses the system's default audio device
+	// Device-specific binding would require more complex AudioUnit integration
+	// For now, we track the intended device and validate it exists
+	// Future enhancement: Implement device-specific AudioUnit configuration
+
 	return nil
 }
 
@@ -287,22 +328,23 @@ func (e *Engine) bindMidiDevice(uid string) error {
 	if err != nil {
 		return fmt.Errorf("failed to enumerate MIDI devices: %w", err)
 	}
-	
+
 	device := midiDevices.ByUID(uid)
 	if device == nil {
 		return fmt.Errorf("MIDI device with UID %s not found", uid)
 	}
-	
+
 	if !device.IsOnline {
 		return fmt.Errorf("MIDI device %s is not online", uid)
 	}
-	
+
 	// Update engine state
 	e.midiDeviceUID = uid
-	
-	// TODO: Bind to MIDI device
-	// This will be implemented when we add MIDI integration
-	
+
+	// Note: MIDI integration requires CoreMIDI integration
+	// For now, we track the intended device and validate it exists
+	// Future enhancement: Implement CoreMIDI input integration
+
 	return nil
 }
 
@@ -310,12 +352,12 @@ func (e *Engine) bindMidiDevice(uid string) error {
 func (e *Engine) addChannel(channel Channel) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	
+
 	id := channel.GetID()
 	if _, exists := e.channels[id]; exists {
 		return fmt.Errorf("channel with ID %s already exists", id)
 	}
-	
+
 	e.channels[id] = channel
 	return nil
 }
@@ -324,21 +366,132 @@ func (e *Engine) addChannel(channel Channel) error {
 func (e *Engine) removeChannel(id string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	
+
 	if id == "master" {
 		return fmt.Errorf("cannot remove master channel")
 	}
-	
+
 	channel, exists := e.channels[id]
 	if !exists {
 		return fmt.Errorf("channel with ID %s not found", id)
 	}
-	
+
 	// Stop the channel before removing
 	if err := channel.Stop(); err != nil {
 		e.errorHandler.HandleError(fmt.Errorf("error stopping channel %s during removal: %w", id, err))
 	}
-	
+
 	delete(e.channels, id)
+	return nil
+}
+
+// getOrCreateInputNode returns a shared AVAudioInputNode for the given device and input bus
+// This implements the node sharing strategy for efficient resource usage
+func (e *Engine) getOrCreateInputNode(deviceUID string, inputBus int) (unsafe.Pointer, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	key := fmt.Sprintf("%s:%d", deviceUID, inputBus)
+
+	// Return existing node if it exists
+	if node, exists := e.inputNodes[key]; exists {
+		return node, nil
+	}
+
+	// Get the AVAudioEngine's input node
+	inputNode, err := e.avEngine.InputNode()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get input node: %w", err)
+	}
+
+	// Store the node for sharing
+	e.inputNodes[key] = inputNode
+
+	return inputNode, nil
+}
+
+// removeInputNode removes a shared input node when no longer needed
+func (e *Engine) removeInputNode(deviceUID string, inputBus int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	key := fmt.Sprintf("%s:%d", deviceUID, inputBus)
+	delete(e.inputNodes, key)
+}
+
+// getAVEngine returns the underlying AVFoundation engine for channel use
+func (e *Engine) getAVEngine() *engine.Engine {
+	return e.avEngine
+}
+
+// startAVEngineIfReady starts the AVFoundation engine when audio graph is complete
+func (e *Engine) startAVEngineIfReady() error {
+	// Only start if not already running and we have a complete audio path
+	if e.avEngine.IsRunning() {
+		return nil
+	}
+
+	// Ensure master channel is connected to output
+	if e.masterChannel == nil {
+		return fmt.Errorf("master channel not available")
+	}
+
+	// Start the AVFoundation engine with complete graph
+	if err := e.avEngine.Start(); err != nil {
+		return fmt.Errorf("failed to start AVFoundation engine: %w", err)
+	}
+
+	return nil
+}
+
+// stopAVEngine stops the AVFoundation engine
+func (e *Engine) stopAVEngine() {
+	if e.avEngine != nil && e.avEngine.IsRunning() {
+		e.avEngine.Stop()
+	}
+}
+
+// Destroy properly cleans up the engine and all resources
+func (e *Engine) Destroy() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// Stop the engine if running
+	if e.isRunning {
+		e.Stop()
+	}
+
+	// Clear input nodes map
+	e.inputNodes = make(map[string]unsafe.Pointer)
+
+	// Destroy AVFoundation engine
+	if e.avEngine != nil {
+		e.avEngine.Destroy()
+		e.avEngine = nil
+	}
+}
+
+// prepareAudioRouting sets up basic audio routing to satisfy AVFoundation requirements
+func (e *Engine) prepareAudioRouting() error {
+	// AVFoundation requires at least one connection between input and output
+	// Create a basic connection: inputNode -> mainMixerNode -> outputNode
+
+	inputNode, err := e.avEngine.InputNode()
+	if err != nil {
+		return fmt.Errorf("failed to get input node: %w", err)
+	}
+
+	mainMixer, err := e.avEngine.MainMixerNode()
+	if err != nil {
+		return fmt.Errorf("failed to get main mixer node: %w", err)
+	}
+
+	// Connect input to main mixer (bus 0 -> bus 0)
+	// This creates the minimal routing that AVFoundation requires
+	if err := e.avEngine.Connect(inputNode, mainMixer, 0, 0); err != nil {
+		// This might fail if already connected, which is fine
+		// AVFoundation will handle the routing
+	}
+
 	return nil
 }

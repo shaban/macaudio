@@ -8,11 +8,51 @@ This document provides detailed implementation specifications for the MacAudio e
 
 ## Phase 1: Core Engine Implementation
 
+### UUID Hybrid Pattern Implementation
+
+**CRITICAL**: Use this pattern consistently throughout the codebase:
+
+```go
+// Struct fields: uuid.UUID for type safety and automatic JSON serialization
+type BaseChannel struct {
+    ID          uuid.UUID           `json:"id"`    // Automatically serializes to string
+    Name        string              `json:"name"`
+    // ...
+}
+
+// Map keys: string (via uuid.String()) for JSON compatibility
+type Engine struct {
+    ID       uuid.UUID             `json:"id"`
+    Channels map[string]Channel    `json:"channels"` // String keys for JSON
+}
+
+// Helper methods: Provide both UUID and string access
+func (bc *BaseChannel) GetID() uuid.UUID { return bc.ID }
+func (bc *BaseChannel) GetIDString() string { return bc.ID.String() }
+
+// Function parameters: uuid.UUID for type safety
+func (e *Engine) GetChannel(id uuid.UUID) (Channel, bool) {
+    channel, exists := e.Channels[id.String()] // Convert for lookup
+    return channel, exists
+}
+
+func (e *Engine) AddChannel(channel Channel) {
+    e.Channels[channel.GetID().String()] = channel // Convert for storage
+}
+```
+
+**Benefits**:
+- ✅ Type safety with UUID parameters prevents string/UUID confusion
+- ✅ JSON compatibility with string map keys  
+- ✅ Automatic UUID ↔ string serialization in JSON
+- ✅ Performance: efficient string key lookups
+- ✅ Consistency across all components
+
 ### 1.1 Engine Core Structure
 
 ```go
-// /engine/engine.go
-package engine
+// engine.go (root package)
+package macaudio
 
 import (
     "github.com/google/uuid"
@@ -30,12 +70,19 @@ type Engine struct {
     
     // Runtime state (not serialized)
     avEngine    *engine.Engine          `json:"-"`
+    inputNodes  map[string]unsafe.Pointer `json:"-"` // deviceUID:inputBus -> AVAudioInputNode
     dispatcher  *Dispatcher             `json:"-"`
     running     bool                    `json:"-"`
 }
 
+type EngineConfig struct {
+    BufferSize      int    `json:"bufferSize"`    // 64, 128, 256, 512, 1024 frames only
+    OutputDeviceUID string `json:"outputDevice"`  // Single output device for entire engine
+}
+
 type EngineSpec struct {
     BufferSize int `json:"bufferSize"` // 64, 128, 256, 512, 1024 frames only
+    // Note: No SampleRate - AVAudioEngine handles sample rate conversion automatically
 }
 
 type Channel interface {
@@ -48,6 +95,8 @@ type Channel interface {
     Start() error
     Stop() error
     Release() error
+    IsReady() bool        // Added for programmatic validation
+    GetError() error      // Added to report specific readiness issues
     
     // Controls
     SetVolume(volume float32) error
@@ -65,7 +114,81 @@ const (
     MidiInputChannelType  ChannelType = "midi_input"
     PlaybackChannelType   ChannelType = "playback"
     AuxChannelType        ChannelType = "aux"
+    MasterChannelType     ChannelType = "master"
 )
+
+func NewEngine(config EngineConfig) (*Engine, error) {
+    // Validate minimal required configuration
+    if config.BufferSize <= 0 {
+        config.BufferSize = 512 // Default buffer size
+    }
+    if config.OutputDeviceUID == "" {
+        return nil, fmt.Errorf("OutputDeviceUID is required in EngineConfig")
+    }
+    if config.ErrorHandler == nil {
+        config.ErrorHandler = &DefaultErrorHandler{}
+    }
+    
+    // Validate output device exists and is online
+    audioDevices, err := devices.GetAudio()
+    if err != nil {
+        return nil, fmt.Errorf("failed to enumerate audio devices: %w", err)
+    }
+    
+    outputDevice := audioDevices.ByUID(config.OutputDeviceUID)
+    if outputDevice == nil {
+        return nil, fmt.Errorf("output device with UID %s not found", config.OutputDeviceUID)
+    }
+    
+    if !outputDevice.IsOnline {
+        return nil, fmt.Errorf("output device %s is not online", config.OutputDeviceUID)
+    }
+    
+    ctx, cancel := context.WithCancel(context.Background())
+    
+    // Create AVFoundation engine with audio specifications
+    audioSpec := engine.AudioSpec{
+        BufferSize:   config.BufferSize,
+        // No sample rate - AVAudioEngine handles conversion automatically
+    }
+    
+    avEngine, err := engine.New(audioSpec)
+    if err != nil {
+        cancel()
+        return nil, fmt.Errorf("failed to create AVFoundation engine: %w", err)
+    }
+    
+    engineInstance := &Engine{
+        ID:               uuid.New(),
+        Name:             "MacAudio Engine",
+        Spec:             EngineSpec{BufferSize: config.BufferSize},
+        Channels:         make(map[string]Channel), // String keys for JSON compatibility
+        avEngine:         avEngine,
+        inputNodes:       make(map[string]unsafe.Pointer),
+        ctx:              ctx,
+        cancel:           cancel,
+        errorHandler:     config.ErrorHandler,
+        initializationState: EngineCreated, // Start in created state
+    }
+    
+    // Initialize master channel immediately (always required)
+    masterChannel, err := NewMasterChannel(engineInstance, config.OutputDeviceUID)
+    if err != nil {
+        avEngine.Destroy()
+        cancel()
+        return nil, fmt.Errorf("failed to create master channel: %w", err)
+    }
+    engineInstance.Master = masterChannel
+    engineInstance.Channels[masterChannel.ID().String()] = masterChannel // UUID to string conversion
+    engineInstance.initializationState = MasterReady
+    
+    // Initialize supporting systems (but don't start them yet)
+    engineInstance.deviceMonitor = NewDeviceMonitor(engineInstance)
+    engineInstance.dispatcher = NewDispatcher(engineInstance)
+    engineInstance.serializer = NewSerializer(engineInstance)
+    
+    return engineInstance, nil
+}
 ```
 
 **📚 DOCUMENTATION REQUIREMENT**: Engine lifecycle and state management patterns - non-obvious threading model with dispatcher pattern.
@@ -367,50 +490,144 @@ type AuxSendCapable interface {
 ### 1.7 MasterChannel Implementation
 
 ```go
-// /engine/master/master.go  
-package master
+// master_channel.go (root package)
+package macaudio
 
 type MasterChannel struct {
     ID              uuid.UUID           `json:"id"`
-    Volume          float32             `json:"volume"`          // 0.0-1.0
-    Mute            bool                `json:"mute"`
-    PluginChain     *pluginchain.PluginChain `json:"pluginChain,omitempty"`
+    PluginChain     *PluginChain        `json:"pluginChain"`
+    Volume          float32             `json:"volume"`          // 0.0 to 1.0
+    IsMuted         bool                `json:"isMuted"`
     OutputDevice    OutputDevice        `json:"outputDevice"`
     MeteringEnabled bool                `json:"meteringEnabled"`
     
-    // Runtime state
-    avEngine        *engine.Engine      `json:"-"`
-    mainMixerNode   unsafe.Pointer      `json:"-"` // AVAudioEngine.mainMixerNode
-    outputNode      unsafe.Pointer      `json:"-"` // AVAudioEngine.outputNode
-    meterTap        *tap.Tap           `json:"-"`
+    // Runtime state (not serialized)
+    meterTap        unsafe.Pointer      `json:"-"` // AVAudioMixerNode tap
+    engine          *Engine             `json:"-"` // Back-reference to engine
 }
 
 type OutputDevice struct {
     DeviceUID string `json:"deviceUID"` // Apple's native output device UID
 }
 
-func NewMasterChannel() *MasterChannel {
-    return &MasterChannel{
-        ID:              uuid.New(),
-        Volume:          1.0,
-        Mute:            false,
-        MeteringEnabled: false,
+func NewMasterChannel(engine *Engine, outputDeviceUID string) (*MasterChannel, error) {
+    // Validate output device exists and is online
+    audioDevices, err := devices.GetAudio()
+    if err != nil {
+        return nil, fmt.Errorf("failed to enumerate audio devices: %w", err)
     }
+    
+    device := audioDevices.ByUID(outputDeviceUID)
+    if device == nil {
+        return nil, fmt.Errorf("output device with UID %s not found", outputDeviceUID)
+    }
+    
+    if !device.IsOnline {
+        return nil, fmt.Errorf("output device %s is not online", outputDeviceUID)
+    }
+    
+    return &MasterChannel{
+        ID:           uuid.New(),
+        PluginChain:  NewPluginChain("master"),
+        Volume:       1.0,
+        IsMuted:      false,
+        OutputDevice: OutputDevice{DeviceUID: outputDeviceUID},
+        MeteringEnabled: false,
+        engine:       engine,
+    }, nil
 }
 
 func (m *MasterChannel) Initialize(avEngine *engine.Engine) error {
     // 1. Get mainMixerNode from AVAudioEngine (automatically created)
-    // 2. Get outputNode from AVAudioEngine
-    // 3. Set up master plugin chain if present
-    // 4. Configure output device
-    // 5. Set up metering tap if enabled
+    mainMixer, err := avEngine.MainMixerNode()
+    if err != nil {
+        return fmt.Errorf("failed to get main mixer node: %w", err)
+    }
+    
+    // 2. Connect mainMixerNode → outputNode (AVAudioEngine does this automatically)
+    outputNode, err := avEngine.OutputNode()
+    if err != nil {
+        return fmt.Errorf("failed to get output node: %w", err)
+    }
+    
+    // The connection mainMixer → outputNode is automatic in AVAudioEngine
+    // We just need to ensure the output device is configured correctly
+    
+    // 3. Set up plugin chain on main mixer if needed
+    if m.PluginChain != nil && len(m.PluginChain.Instances) > 0 {
+        return m.PluginChain.InstallInEngine(avEngine, mainMixer)
+    }
     
     return nil
 }
 
+func (m *MasterChannel) SetOutputDevice(deviceUID string) error {
+    // Queue through dispatcher as this requires engine restart
+    return m.engine.dispatcher.QueueOutputDeviceChange(deviceUID)
+}
+
 func (m *MasterChannel) EnableMetering(enable bool) error {
     // Install or remove tap on mainMixerNode for level monitoring
+    mainMixer, err := m.engine.avEngine.MainMixerNode()
+    if err != nil {
+        return fmt.Errorf("failed to get main mixer node: %w", err)
+    }
+    
+    if enable && m.meterTap == nil {
+        // Install metering tap
+        tap, err := m.engine.avEngine.InstallTap(mainMixer, 0)
+        if err != nil {
+            return fmt.Errorf("failed to install metering tap: %w", err)
+        }
+        m.meterTap = tap
+    } else if !enable && m.meterTap != nil {
+        // Remove metering tap
+        m.engine.avEngine.RemoveTap(mainMixer, 0)
+        m.meterTap = nil
+    }
+    
+    m.MeteringEnabled = enable
     return nil
+}
+
+func (m *MasterChannel) GetMeterLevel() (float32, error) {
+    if !m.MeteringEnabled || m.meterTap == nil {
+        return 0.0, fmt.Errorf("metering not enabled")
+    }
+    
+    // Get current RMS level from meter tap
+    return m.engine.avEngine.GetTapLevel(m.meterTap)
+}
+
+// Delete is not allowed - MasterChannel cannot be deleted
+func (m *MasterChannel) Delete() error {
+    return fmt.Errorf("master channel cannot be deleted - only removed when entire engine is destroyed")
+}
+
+// Channel interface implementation
+func (m *MasterChannel) ID() uuid.UUID { return m.ID }
+func (m *MasterChannel) Name() string { return "Master" }
+func (m *MasterChannel) Type() ChannelType { return MasterChannelType }
+
+func (m *MasterChannel) Start() error {
+    // Master channel is always running - no separate start needed
+    return nil
+}
+
+func (m *MasterChannel) Stop() error {
+    // Master channel stops when engine stops - no separate stop needed
+    return nil
+}
+
+func (m *MasterChannel) Release() error {
+    if m.meterTap != nil {
+        mainMixer, _ := m.engine.avEngine.MainMixerNode()
+        m.engine.avEngine.RemoveTap(mainMixer, 0)
+        m.meterTap = nil
+    }
+    return nil
+}
+```
 }
 
 func (m *MasterChannel) GetMeterLevel() (float64, error) {
@@ -686,12 +903,19 @@ type PluginChain struct {
 
 type PluginInstance struct {
     ID          uuid.UUID `json:"id"`
-    *plugins.Plugin        `json:"plugin"` // Embedded from plugins package
-    Bypassed    bool      `json:"bypassed"`
-    IsInstalled bool      `json:"isInstalled"` // false on deserialization failure
+    PluginInfo  plugins.PluginInfo `json:"pluginInfo"` // Identifies which plugin to load
+    Parameters  []ParameterValue   `json:"parameters"` // Serialized parameter values
+    Bypassed    bool               `json:"bypassed"`
+    IsInstalled bool               `json:"isInstalled"` // false on deserialization failure
     
-    // Runtime state
+    // Runtime state (not serialized)
     avUnit      unsafe.Pointer `json:"-"` // AVAudioUnit
+}
+
+// ParameterValue stores the current value of a plugin parameter for serialization
+type ParameterValue struct {
+    Address      uint64  `json:"address"`      // Parameter address (from plugins.Parameter.Address)
+    CurrentValue float32 `json:"currentValue"` // Saved parameter value
 }
 
 func NewPluginChain(name string) *PluginChain {
@@ -703,15 +927,74 @@ func NewPluginChain(name string) *PluginChain {
 }
 
 func (pc *PluginChain) AddPlugin(pluginInfo plugins.PluginInfo) (*PluginInstance, error) {
-    // 1. Introspect plugin to get full details
-    plugin, err := pluginInfo.Introspect()
+    // 1. Introspect plugin to get full parameter details using correct API
+    plugin, err := pluginInfo.Introspect() // Returns *plugins.Plugin
     if err != nil {
-        return nil, fmt.Errorf("failed to introspect plugin: %w", err)
+        return nil, fmt.Errorf("failed to introspect plugin %s: %w", pluginInfo.Name, err)
     }
     
-    // 2. Create instance
+    // 2. Create parameter values from plugin defaults using plugins.Parameter.Address
+    parameterValues := make([]ParameterValue, len(plugin.Parameters))
+    for i, param := range plugin.Parameters {
+        parameterValues[i] = ParameterValue{
+            Address:      param.Address,      // Use Address from plugins.Parameter
+            CurrentValue: param.DefaultValue, // Start with DefaultValue from plugins.Parameter
+        }
+    }
+    
     instance := &PluginInstance{
         ID:          uuid.New(),
+        PluginInfo:  pluginInfo,          // Store PluginInfo for re-introspection
+        Parameters:  parameterValues,     // Address-based parameter storage
+        Bypassed:    false,
+        IsInstalled: false,               // Will be set to true if AVAudioUnit creation succeeds
+    }
+    
+    pc.Instances = append(pc.Instances, instance)
+    return instance, nil
+}
+
+func (pc *PluginChain) InstallInEngine(avEngine *engine.Engine, dispatcher *Dispatcher) error {
+    for _, instance := range pc.Instances {
+        if err := pc.createAVUnit(instance, avEngine); err != nil {
+            // Mark as failed to install but continue with other plugins
+            instance.IsInstalled = false
+            continue
+        }
+        instance.IsInstalled = true
+        
+        // Apply saved parameter values to the AVAudioUnit
+        if err := pc.applySavedParameters(instance); err != nil {
+            // Log error but continue - plugin is installed, just parameters may be at defaults
+            log.Printf("Warning: failed to apply saved parameters to plugin %s: %v", instance.PluginInfo.Name, err)
+        }
+    }
+    return nil
+}
+
+func (pc *PluginChain) applySavedParameters(instance *PluginInstance) error {
+    // Re-introspect to get current parameter structure (in case plugin updated)
+    plugin, err := instance.PluginInfo.Introspect()
+    if err != nil {
+        return fmt.Errorf("failed to re-introspect plugin: %w", err)
+    }
+    
+    // Apply saved parameter values by address
+    for _, savedParam := range instance.Parameters {
+        // Find parameter by address in current plugin structure
+        for _, currentParam := range plugin.Parameters {
+            if currentParam.Address == savedParam.Address {
+                // Apply saved value to AVAudioUnit parameter
+                if err := pc.setAVUnitParameter(instance.avUnit, currentParam.Address, savedParam.CurrentValue); err != nil {
+                    log.Printf("Warning: failed to set parameter %s to %f: %v", currentParam.DisplayName, savedParam.CurrentValue, err)
+                }
+                break
+            }
+        }
+    }
+    
+    return nil
+}
         Plugin:      plugin,
         Bypassed:    false,
         IsInstalled: false, // Will be set to true after successful AVAudioUnit creation
@@ -833,76 +1116,512 @@ func validateEngine(e *Engine) error {
 
 ## Phase 4: Error Handling and Recovery
 
-### 4.1 Error Types and Handling
+### 4.1 Error Types and Handling with App Callbacks
 
 ```go
-// /engine/errors.go
-package engine
+// errors.go (root package)
+package macaudio
 
 type EngineError struct {
-    Type    ErrorType
-    Message string
-    Channel uuid.UUID // Optional - if error is channel-specific
-    Device  string    // Optional - if error is device-specific
-    Plugin  uuid.UUID // Optional - if error is plugin-specific
+    Type      ErrorType `json:"type"`
+    Message   string    `json:"message"`
+    DeviceUID string    `json:"deviceUID,omitempty"` // For device-related errors
+    ChannelID uuid.UUID `json:"channelID,omitempty"` // For channel-related errors
 }
 
 type ErrorType string
 const (
-    DeviceOfflineError    ErrorType = "device_offline"
-    DeviceRemovedError    ErrorType = "device_removed"
-    PluginLoadError       ErrorType = "plugin_load_failed"
-    PluginCrashError      ErrorType = "plugin_crash"
-    BufferUnderrunError   ErrorType = "buffer_underrun"
-    EngineStartError      ErrorType = "engine_start_failed"
+    DeviceOfflineError        ErrorType = "device_offline"
+    DeviceOnlineError         ErrorType = "device_online"        // Device reconnected
+    OutputDeviceOfflineError  ErrorType = "output_device_offline" 
+    EngineStartError          ErrorType = "engine_start_failed"
+    PluginLoadError           ErrorType = "plugin_load_failed"
+)
+
+// Device-specific error types
+type DeviceOfflineError struct {
+    DeviceUID string
+    Type      DeviceType // InputDevice or OutputDevice
+}
+
+type DeviceOnlineError struct {
+    DeviceUID string
+    Type      DeviceType
+}
+
+type DeviceType string
+const (
+    InputDevice  DeviceType = "input"
+    OutputDevice DeviceType = "output"
 )
 
 func (e EngineError) Error() string {
     return fmt.Sprintf("[%s] %s", e.Type, e.Message)
 }
 
+// ErrorHandler interface - all callbacks are made via dispatcher (background thread)
 type ErrorHandler interface {
-    HandleError(EngineError) ErrorAction
+    // Device failure notifications
+    HandleDeviceOffline(deviceUID string, deviceType DeviceType)
+    HandleDeviceOnline(deviceUID string, deviceType DeviceType) 
+    
+    // Engine state notifications  
+    HandleEngineError(err error)
+    
+    // Plugin notifications
+    HandlePluginLoadFailure(pluginInfo plugins.PluginInfo, err error)
 }
 
-type ErrorAction string
+// Default error handler - consuming apps should provide their own
+type DefaultErrorHandler struct {
+    OnDeviceOffline func(deviceUID string, deviceType DeviceType)
+    OnDeviceOnline  func(deviceUID string, deviceType DeviceType)
+    OnEngineError   func(error)
+    OnPluginError   func(plugins.PluginInfo, error)
+}
+
+func (h *DefaultErrorHandler) HandleDeviceOffline(deviceUID string, deviceType DeviceType) {
+    if h.OnDeviceOffline != nil {
+        h.OnDeviceOffline(deviceUID, deviceType)
+    }
+}
+
+func (h *DefaultErrorHandler) HandleDeviceOnline(deviceUID string, deviceType DeviceType) {
+    if h.OnDeviceOnline != nil {
+        h.OnDeviceOnline(deviceUID, deviceType)
+    }
+}
+
+func (h *DefaultErrorHandler) HandleEngineError(err error) {
+    if h.OnEngineError != nil {
+        h.OnEngineError(err)
+    }
+}
+
+func (h *DefaultErrorHandler) HandlePluginLoadFailure(pluginInfo plugins.PluginInfo, err error) {
+    if h.OnPluginError != nil {
+        h.OnPluginError(pluginInfo, err)
+    }
+}
+
+// App callback notification mechanism (queued through dispatcher)
+func (d *Dispatcher) notifyDeviceOffline(deviceUID string, deviceType DeviceType) {
+    // Queue notification through dispatcher (not direct call - follows dispatcher rule)
+    d.queueOperation(DeviceNotificationOperation{
+        Type:       NotifyDeviceOffline,
+        DeviceUID:  deviceUID,
+        DeviceType: deviceType,
+    })
+}
+
+func (d *Dispatcher) notifyDeviceOnline(deviceUID string, deviceType DeviceType) {
+    // Queue notification through dispatcher  
+    d.queueOperation(DeviceNotificationOperation{
+        Type:       NotifyDeviceOnline,
+        DeviceUID:  deviceUID,
+        DeviceType: deviceType,
+    })
+}
+
+func (d *Dispatcher) handleDeviceNotification(op DeviceNotificationOperation) error {
+    // This runs on dispatcher background thread - app must marshal to main thread for UI
+    switch op.Type {
+    case NotifyDeviceOffline:
+        d.engine.errorHandler.HandleDeviceOffline(op.DeviceUID, op.DeviceType)
+    case NotifyDeviceOnline:
+        d.engine.errorHandler.HandleDeviceOnline(op.DeviceUID, op.DeviceType)
+    }
+    return nil
+}
+```
+
+**📚 DOCUMENTATION REQUIREMENT**: Error handling callbacks and threading - all callbacks on background thread, app responsibility to marshal to main thread for UI updates.**📚 DOCUMENTATION REQUIREMENT**: Error handling philosophy and default behaviors - the "library detects, app handles" principle needs clear explanation with examples.
+
+## Phase 5: AVFoundation Integration Sequence ⚠️ CRITICAL
+
+### 5.1 Engine Initialization Strategy
+
+**ARCHITECTURAL DECISION**: MacAudio follows a **programmatic initialization** approach rather than requiring complete upfront configuration. This supports both library-driven requests and serialization/deserialization requirements.
+
+```go
+type Engine struct {
+    // ... other fields
+    initializationState EngineInitState `json:"-"` // Tracks what's ready to start
+}
+
+type EngineInitState int
 const (
-    ContinueAction ErrorAction = "continue"    // Continue operation, log error
-    StopChannel    ErrorAction = "stop_channel" // Stop specific channel
-    StopEngine     ErrorAction = "stop_engine"  // Stop entire engine
-    NotifyApp      ErrorAction = "notify_app"   // Notify consuming app
+    EngineCreated     EngineInitState = iota // AVFoundation engine created
+    MasterReady       EngineInitState = iota // Master channel initialized  
+    ChannelsReady     EngineInitState = iota // At least one channel ready
+    AudioGraphReady   EngineInitState = iota // Complete audio path exists
+    EngineRunning     EngineInitState = iota // AVFoundation engine started
 )
 
-// Default error handler - consuming apps can provide their own
-type DefaultErrorHandler struct {
-    OnError func(EngineError)
-}
-
-func (h *DefaultErrorHandler) HandleError(err EngineError) ErrorAction {
-    if h.OnError != nil {
-        h.OnError(err)
+func (e *Engine) Start() error {
+    // Programmatic validation - check if engine is ready to start
+    if e.initializationState < AudioGraphReady {
+        return e.generateInitializationError()
     }
     
-    switch err.Type {
-    case DeviceOfflineError, DeviceRemovedError:
-        return StopChannel
-    case PluginLoadError:
-        return ContinueAction // Continue without plugin
-    case PluginCrashError:
-        return ContinueAction // Plugin bypass automatically handled
-    case EngineStartError:
-        return StopEngine
+    // Validate all channels are properly initialized and ready
+    for _, channel := range e.Channels {
+        if !channel.IsReady() {
+            return fmt.Errorf("channel %s not ready: %w", channel.Name(), channel.GetError())
+        }
+    }
+    
+    // Create basic routing if needed (minimal audio path)
+    if e.needsBasicRouting() {
+        if err := e.createBasicRouting(); err != nil {
+            return fmt.Errorf("failed to create basic routing: %w", err)
+        }
+    }
+    
+    // Start AVFoundation engine (safe - complete audio graph exists)
+    if err := e.avEngine.Start(); err != nil {
+        return fmt.Errorf("failed to start AVFoundation engine: %w", err)
+    }
+    
+    // Start supporting systems
+    if err := e.deviceMonitor.Start(); err != nil {
+        e.avEngine.Stop()
+        return fmt.Errorf("failed to start device monitor: %w", err)
+    }
+    
+    if err := e.dispatcher.Start(); err != nil {
+        e.avEngine.Stop()
+        e.deviceMonitor.Stop()
+        return fmt.Errorf("failed to start dispatcher: %w", err)
+    }
+    
+    e.running = true
+    e.initializationState = EngineRunning
+    return nil
+}
+
+func (e *Engine) generateInitializationError() error {
+    switch e.initializationState {
+    case EngineCreated:
+        return fmt.Errorf("engine cannot start: master channel not initialized - this should not happen (master is auto-created)")
+    case MasterReady:
+        audioChannelCount := 0
+        for _, channel := range e.Channels {
+            if channel.Type() != MasterChannelType {
+                audioChannelCount++
+            }
+        }
+        if audioChannelCount == 0 {
+            return fmt.Errorf("engine cannot start: no audio channels created - create at least one AudioInputChannel, MidiInputChannel, or PlaybackChannel using engine.CreateXXXChannel() methods")
+        }
+        return fmt.Errorf("engine cannot start: channels exist but audio graph not ready - check that all channels are properly configured and devices are online")
+    case ChannelsReady:
+        // Check specific channel issues
+        var issues []string
+        for _, channel := range e.Channels {
+            if !channel.IsReady() {
+                issues = append(issues, fmt.Sprintf("%s: %v", channel.Name(), channel.GetError()))
+            }
+        }
+        return fmt.Errorf("engine cannot start: channel issues: %s", strings.Join(issues, "; "))
     default:
-        return NotifyApp
+        return fmt.Errorf("engine cannot start: unknown initialization state")
+    }
+}
+
+func (e *Engine) needsBasicRouting() bool {
+    // Check if we have at least one input channel and master channel
+    hasInputChannel := false
+    for _, channel := range e.Channels {
+        if channel.Type() == AudioInputChannelType || channel.Type() == MidiInputChannelType {
+            hasInputChannel = true
+            break
+        }
+    }
+    
+    // If we only have master channel and no input channels, we need basic routing
+    return !hasInputChannel
+}
+
+func (e *Engine) updateInitializationState() {
+    // Update state based on current engine contents
+    if len(e.Channels) > 1 { // More than just master
+        e.initializationState = ChannelsReady
+        
+        // Check if all channels are ready for audio graph
+        allReady := true
+        for _, channel := range e.Channels {
+            if !channel.IsReady() {
+                allReady = false
+                break
+            }
+        }
+        
+        if allReady {
+            e.initializationState = AudioGraphReady
+        }
+    }
+}
+
+func (e *Engine) generateInitializationError() error {
+    switch e.initializationState {
+    case EngineCreated:
+        return fmt.Errorf("engine cannot start: master channel not initialized - call engine.GetMasterChannel().Initialize()")
+    case MasterReady:
+        return fmt.Errorf("engine cannot start: no audio channels created - create at least one AudioInputChannel, MidiInputChannel, or PlaybackChannel")
+    case ChannelsReady:
+        return fmt.Errorf("engine cannot start: incomplete audio graph - ensure channels are properly connected and devices are online")
+    default:
+        return fmt.Errorf("engine cannot start: unknown initialization state")
     }
 }
 ```
 
-**📚 DOCUMENTATION REQUIREMENT**: Error handling philosophy and default behaviors - the "library detects, app handles" principle needs clear explanation with examples.
+**Benefits**:
+- ✅ **Library-Driven**: App can add channels incrementally, engine provides clear errors if start is attempted too early
+- ✅ **Serialization Support**: Engine state can be deserialized and validated before starting
+- ✅ **Meaningful Errors**: Specific error messages guide app developers to missing requirements
+- ✅ **Flexibility**: Supports both simple (few channels) and complex (many channels) audio setups
 
-## Phase 5: Integration Points
+### 5.2 Engine Startup Sequence (When AudioGraphReady)
 
-### 5.1 Dispatcher Pattern (Queue System)
+```go
+func (e *Engine) Start() error {
+    // Phase 1: AVFoundation engine already created in NewEngine()
+    
+    // Phase 2: Validate all channels are properly initialized
+    for _, channel := range e.Channels {
+        if !channel.IsReady() {
+            return fmt.Errorf("channel %s not ready: %w", channel.ID(), channel.GetError())
+        }
+    }
+    
+    // Phase 3: Create basic routing if needed (minimal audio path)
+    if e.needsBasicRouting() {
+        if err := e.createBasicRouting(); err != nil {
+            return fmt.Errorf("failed to create basic routing: %w", err)
+        }
+    }
+    
+    // Phase 4: Start AVFoundation engine (safe - complete audio graph exists)
+    if err := e.avEngine.Start(); err != nil {
+        return fmt.Errorf("failed to start AVFoundation engine: %w", err)
+    }
+    
+    // Phase 5: Start supporting systems
+    if err := e.deviceMonitor.Start(); err != nil {
+        e.avEngine.Stop()
+        return fmt.Errorf("failed to start device monitor: %w", err)
+    }
+    
+    if err := e.dispatcher.Start(); err != nil {
+        e.avEngine.Stop()
+        e.deviceMonitor.Stop()
+        return fmt.Errorf("failed to start dispatcher: %w", err)
+    }
+    
+    e.running = true
+    e.initializationState = EngineRunning
+    return nil
+}
+```
+
+// createBasicRouting ensures AVFoundation has minimum required connections
+func (e *Engine) createBasicRouting() error {
+    // AVFoundation requires at least one connection between input and output
+    inputNode, err := e.avEngine.InputNode()
+    if err != nil {
+        return fmt.Errorf("failed to get input node: %w", err)
+    }
+    
+    mainMixer, err := e.avEngine.MainMixerNode()
+    if err != nil {
+        return fmt.Errorf("failed to get main mixer node: %w", err)
+    }
+    
+    // Connect input to main mixer to satisfy AVFoundation requirements
+    if err := e.avEngine.Connect(inputNode, mainMixer, 0, 0); err != nil {
+        // This might fail if already connected, which is acceptable
+        // AVFoundation will handle the routing appropriately
+    }
+    
+    return nil
+}
+```
+
+### 5.4 Device Failure Handling and Reconnection
+
+**DEVICE FAILURE STRATEGY**: Same handling for input and output device failures - stop engine, notify app, no automatic switching.
+
+```go
+type DeviceFailureHandler struct {
+    engine *Engine
+}
+
+func (h *DeviceFailureHandler) HandleInputDeviceFailure(deviceUID string) {
+    // Queue through dispatcher (not volume/pan/plugin parameter operation)
+    h.engine.dispatcher.QueueInputDeviceFailure(deviceUID)
+}
+
+func (h *DeviceFailureHandler) HandleOutputDeviceFailure(deviceUID string) {
+    // Queue through dispatcher (not volume/pan/plugin parameter operation)  
+    h.engine.dispatcher.QueueOutputDeviceFailure(deviceUID)
+}
+
+// In dispatcher
+func (d *Dispatcher) handleInputDeviceFailure(deviceUID string) error {
+    // 1. Find all channels using this device and mark offline
+    for _, channel := range d.engine.Channels {
+        if inputChannel, ok := channel.(*AudioInputChannel); ok && inputChannel.DeviceUID == deviceUID {
+            inputChannel.SetDeviceOnline(false)
+        }
+        if midiChannel, ok := channel.(*MidiInputChannel); ok && midiChannel.DeviceUID == deviceUID {
+            midiChannel.SetDeviceOnline(false)
+        }
+    }
+    
+    // 2. Stop affected channels (they will produce no audio when device is offline)
+    // Channels remain in engine - they can be restarted when device comes back online
+    
+    // 3. Notify app via error handler (on background thread - app marshals to main)
+    d.engine.errorHandler.HandleError(DeviceOfflineError{
+        DeviceUID: deviceUID,
+        Type:     InputDeviceOffline,
+    })
+    
+    return nil
+}
+
+func (d *Dispatcher) handleOutputDeviceFailure(deviceUID string) error {
+    // 1. Master channel output device failed - stop entire engine
+    d.engine.avEngine.Stop()
+    d.engine.running = false
+    
+    // 2. Notify app via error handler (on background thread - app marshals to main)
+    d.engine.errorHandler.HandleError(DeviceOfflineError{
+        DeviceUID: deviceUID,
+        Type:     OutputDeviceOffline,
+    })
+    
+    return nil
+}
+
+// Device reconnection when device comes back online
+func (d *Dispatcher) handleDeviceOnline(deviceUID string) error {
+    // 1. Update IsOnline status for affected channels
+    // 2. Attempt to restart affected channels
+    // 3. Notify app of successful reconnection
+    
+    for _, channel := range d.engine.Channels {
+        if inputChannel, ok := channel.(*AudioInputChannel); ok && inputChannel.DeviceUID == deviceUID {
+            if err := inputChannel.Reconnect(); err != nil {
+                // Log error but continue with other channels
+                d.engine.errorHandler.HandleError(fmt.Errorf("failed to reconnect channel %s: %w", inputChannel.ID(), err))
+            }
+        }
+    }
+    
+    return nil
+}
+```
+
+### 5.5 AuxSend Cleanup (Race Condition Prevention)
+
+**CRITICAL**: AuxChannel deletion must be serialized through dispatcher to prevent races.
+
+```go
+func (aux *AuxChannel) Delete(engine *Engine) error {
+    // Queue deletion through dispatcher (not volume/pan/plugin parameter operation)
+    return engine.dispatcher.QueueAuxChannelDeletion(aux.ID)
+}
+
+// In dispatcher  
+func (d *Dispatcher) handleAuxChannelDeletion(auxID uuid.UUID) error {
+    // This runs on the dispatcher thread, preventing races
+    
+    // 1. Find all channels with AuxSends to this aux
+    for _, channel := range d.engine.Channels {
+        if sendCapable, ok := channel.(AuxSendCapable); ok {
+            sendCapable.RemoveAuxSend(auxID) // Safe - single thread
+        }
+    }
+    
+    // 2. Remove the aux channel itself
+    delete(d.engine.Channels, auxID)
+    
+    return nil
+}
+```
+
+### 5.6 Dispatcher Queue Rules (COMPREHENSIVE)
+
+**RULE**: Everything that is NOT panning, volume, send amount, plugin parameter get|set goes through the dispatcher, including mute.
+
+```go
+// ✅ DIRECT CALLS (Real-time safe, no dispatcher needed)
+channel.SetVolume(0.8)                    // Volume changes
+channel.SetPan(-0.5)                      // Panning changes  
+channel.SetAuxSendAmount(auxID, 0.3)      // Aux send levels
+pluginInstance.GetParameter(address)      // Plugin parameter reads
+pluginInstance.SetParameter(address, val) // Plugin parameter writes
+
+// ❌ DISPATCHER QUEUE (Topology/state changes, includes mute)
+channel.SetMute(true)                     // Mute is a topology change
+channel.AddPlugin(pluginInfo)             // Plugin chain modifications
+channel.RemovePlugin(pluginID)            // Plugin removal
+channel.BypassPlugin(pluginID, true)      // Plugin bypass
+engine.CreateAudioInputChannel(config)    // Channel creation
+engine.RemoveChannel(channelID)           // Channel deletion  
+auxChannel.Delete()                       // AuxChannel deletion
+masterChannel.SetOutputDevice(deviceUID)  // Output device changes
+errorHandler.HandleError(error)           // Error callbacks
+deviceMonitor.OnDeviceChange(event)       // Device state changes
+```
+
+### 5.3 Output Device Changes (No Engine Restart Required)
+
+**CORRECTED**: AVAudioEngine can change output devices without full engine restart.
+
+```go
+func (m *MasterChannel) SetOutputDevice(deviceUID string) error {
+    // Validate device exists and is online first
+    audioDevices, err := devices.GetAudio()
+    if err != nil {
+        return fmt.Errorf("failed to enumerate audio devices: %w", err)
+    }
+    
+    device := audioDevices.ByUID(deviceUID)
+    if device == nil {
+        return fmt.Errorf("output device with UID %s not found", deviceUID)
+    }
+    
+    if !device.IsOnline {
+        return fmt.Errorf("output device %s is not online", deviceUID)
+    }
+    
+    // Queue through dispatcher as this affects audio routing
+    return m.engine.dispatcher.QueueOutputDeviceChange(deviceUID)
+}
+
+// In dispatcher
+func (d *Dispatcher) handleOutputDeviceChange(deviceUID string) error {
+    // AVAudioEngine can handle output device changes gracefully
+    outputNode, err := d.engine.avEngine.OutputNode()
+    if err != nil {
+        return fmt.Errorf("failed to get output node: %w", err)
+    }
+    
+    // Set the specific output device on the output node
+    if err := d.engine.avEngine.SetOutputDevice(outputNode, deviceUID); err != nil {
+        return fmt.Errorf("failed to set output device: %w", err)
+    }
+    
+    // Update master channel state
+    d.engine.Master.OutputDevice.DeviceUID = deviceUID
+    
+    return nil
+}
+```
 
 ```go
 // /engine/dispatcher/dispatcher.go  
