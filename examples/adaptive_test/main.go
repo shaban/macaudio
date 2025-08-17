@@ -13,9 +13,9 @@ func main() {
 	
 	// Create minimal engine
 	config := macaudio.EngineConfig{
-		BufferSize:   256,
-		SampleRate:   44100.0,
-		ErrorHandler: &macaudio.DefaultErrorHandler{},
+		BufferSize:      256,
+		OutputDeviceUID: "BuiltInSpeakerDevice", // Required in new config
+		ErrorHandler:    &macaudio.DefaultErrorHandler{},
 	}
 	
 	engine, err := macaudio.NewEngine(config)

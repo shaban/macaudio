@@ -4,11 +4,15 @@ import (
 	"fmt"
 	"sync"
 	"unsafe"
+
+	"github.com/google/uuid"
 )
 
 // BaseChannel provides common functionality for all channel types
 type BaseChannel struct {
-	id          string
+	// UUID hybrid pattern: struct uses uuid.UUID, maps use string keys
+	id          uuid.UUID
+	name        string
 	channelType ChannelType
 	engine      *Engine
 
@@ -30,9 +34,10 @@ type BaseChannel struct {
 }
 
 // NewBaseChannel creates a new base channel with common initialization
-func NewBaseChannel(id string, channelType ChannelType, engine *Engine) *BaseChannel {
+func NewBaseChannel(name string, channelType ChannelType, engine *Engine) *BaseChannel {
 	return &BaseChannel{
-		id:          id,
+		id:          uuid.New(), // Generate new UUID
+		name:        name,
 		channelType: channelType,
 		engine:      engine,
 		volume:      1.0, // Default volume
@@ -44,9 +49,24 @@ func NewBaseChannel(id string, channelType ChannelType, engine *Engine) *BaseCha
 	}
 }
 
-// GetID returns the channel ID
-func (bc *BaseChannel) GetID() string {
+// GetID returns the channel UUID (hybrid pattern)
+func (bc *BaseChannel) GetID() uuid.UUID {
 	return bc.id
+}
+
+// GetIDString returns the channel UUID as string for map keys
+func (bc *BaseChannel) GetIDString() string {
+	return bc.id.String()
+}
+
+// GetName returns the channel name
+func (bc *BaseChannel) GetName() string {
+	return bc.name
+}
+
+// SetName sets the channel name
+func (bc *BaseChannel) SetName(name string) {
+	bc.name = name
 }
 
 // GetType returns the channel type
@@ -93,8 +113,8 @@ func (bc *BaseChannel) ConnectTo(target Channel, bus int) error {
 	defer bc.mu.Unlock()
 
 	connection := Connection{
-		SourceChannel: bc.id,
-		TargetChannel: target.GetID(),
+		SourceChannel: bc.GetIDString(), // Convert UUID to string
+		TargetChannel: target.GetIDString(),
 		SourceBus:     0, // Most channels have single output bus
 		TargetBus:     bus,
 	}
@@ -108,7 +128,7 @@ func (bc *BaseChannel) DisconnectFrom(target Channel, bus int) error {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 
-	targetID := target.GetID()
+	targetID := target.GetIDString() // Get string representation for comparison
 	for i, conn := range bc.connections {
 		if conn.TargetChannel == targetID && conn.TargetBus == bus {
 			// Remove connection
@@ -229,7 +249,7 @@ func (bc *BaseChannel) GetState() ChannelState {
 	copy(connections, bc.connections)
 
 	return ChannelState{
-		ID:          bc.id,
+		ID:          bc.GetIDString(), // Convert UUID to string for JSON
 		Type:        bc.channelType,
 		Volume:      bc.volume,
 		Pan:         bc.pan,
@@ -350,8 +370,8 @@ type AuxChannel struct {
 }
 
 // NewMasterChannel creates a new master channel
-func NewMasterChannel(id string, engine *Engine) (*MasterChannel, error) {
-	baseChannel := NewBaseChannel(id, ChannelTypeMaster, engine)
+func NewMasterChannel(name string, engine *Engine) (*MasterChannel, error) {
+	baseChannel := NewBaseChannel(name, ChannelTypeMaster, engine)
 
 	return &MasterChannel{
 		BaseChannel:    baseChannel,
@@ -361,8 +381,8 @@ func NewMasterChannel(id string, engine *Engine) (*MasterChannel, error) {
 }
 
 // NewAudioInputChannel creates a new audio input channel
-func NewAudioInputChannel(id string, config AudioInputConfig, engine *Engine) (*AudioInputChannel, error) {
-	baseChannel := NewBaseChannel(id, ChannelTypeAudioInput, engine)
+func NewAudioInputChannel(name string, config AudioInputConfig, engine *Engine) (*AudioInputChannel, error) {
+	baseChannel := NewBaseChannel(name, ChannelTypeAudioInput, engine)
 
 	// Get or create shared input node for this device/bus combination
 	inputNode, err := engine.getOrCreateInputNode(config.DeviceUID, config.InputBus)
@@ -430,8 +450,8 @@ func (aic *AudioInputChannel) Stop() error {
 }
 
 // NewMidiInputChannel creates a new MIDI input channel
-func NewMidiInputChannel(id string, config MidiInputConfig, engine *Engine) (*MidiInputChannel, error) {
-	baseChannel := NewBaseChannel(id, ChannelTypeMidiInput, engine)
+func NewMidiInputChannel(name string, config MidiInputConfig, engine *Engine) (*MidiInputChannel, error) {
+	baseChannel := NewBaseChannel(name, ChannelTypeMidiInput, engine)
 
 	return &MidiInputChannel{
 		BaseChannel: baseChannel,
@@ -442,8 +462,8 @@ func NewMidiInputChannel(id string, config MidiInputConfig, engine *Engine) (*Mi
 }
 
 // NewPlaybackChannel creates a new playback channel
-func NewPlaybackChannel(id string, config PlaybackConfig, engine *Engine) (*PlaybackChannel, error) {
-	baseChannel := NewBaseChannel(id, ChannelTypePlayback, engine)
+func NewPlaybackChannel(name string, config PlaybackConfig, engine *Engine) (*PlaybackChannel, error) {
+	baseChannel := NewBaseChannel(name, ChannelTypePlayback, engine)
 
 	return &PlaybackChannel{
 		BaseChannel: baseChannel,
@@ -460,8 +480,8 @@ func NewPlaybackChannel(id string, config PlaybackConfig, engine *Engine) (*Play
 }
 
 // NewAuxChannel creates a new auxiliary channel
-func NewAuxChannel(id string, config AuxConfig, engine *Engine) (*AuxChannel, error) {
-	baseChannel := NewBaseChannel(id, ChannelTypeAux, engine)
+func NewAuxChannel(name string, config AuxConfig, engine *Engine) (*AuxChannel, error) {
+	baseChannel := NewBaseChannel(name, ChannelTypeAux, engine)
 
 	return &AuxChannel{
 		BaseChannel: baseChannel,

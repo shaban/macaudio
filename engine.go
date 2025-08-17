@@ -6,12 +6,28 @@ import (
 	"sync"
 	"unsafe"
 
+	"github.com/google/uuid"
 	"github.com/shaban/macaudio/avaudio/engine"
 	"github.com/shaban/macaudio/devices"
 )
 
+// EngineInitState tracks engine initialization lifecycle
+type EngineInitState int
+
+const (
+	EngineCreated     EngineInitState = iota // AVFoundation engine created, no channels
+	MasterReady       EngineInitState = iota // Master channel initialized
+	ChannelsReady     EngineInitState = iota // At least one audio channel exists
+	AudioGraphReady   EngineInitState = iota // Complete audio path validated
+	EngineRunning     EngineInitState = iota // AVFoundation engine started successfully
+)
+
 // Engine represents the main audio engine with unified architecture
 type Engine struct {
+	// Core identity (UUID hybrid pattern)
+	id   uuid.UUID // Internal UUID
+	name string
+
 	// Core state
 	mu            sync.RWMutex
 	ctx           context.Context
@@ -21,7 +37,7 @@ type Engine struct {
 	dispatcher    *Dispatcher
 	serializer    *Serializer
 
-	// Channel management
+	// Channel management (string keys for JSON compatibility)
 	channels      map[string]Channel
 	masterChannel *MasterChannel
 
@@ -29,25 +45,25 @@ type Engine struct {
 	avEngine   *engine.Engine
 	inputNodes map[string]unsafe.Pointer // key: "deviceUID:inputBus", value: AVAudioInputNode*
 
-	// Device state tracking
-	audioDeviceUID string // Currently bound audio device UID
-	midiDeviceUID  string // Currently bound MIDI device UID
-
 	// Configuration
-	bufferSize int
-	sampleRate float64
+	bufferSize      int
+	outputDeviceUID string // Single output device for entire engine
 
 	// Error boundary
 	errorHandler ErrorHandler
+
+	// Initialization state tracking
+	initState EngineInitState
 }
 
 // EngineConfig holds configuration for engine initialization
 type EngineConfig struct {
-	BufferSize     int
-	SampleRate     float64
-	AudioDeviceUID string
-	MidiDeviceUID  string
-	ErrorHandler   ErrorHandler
+	BufferSize      int          // Required: 64, 128, 256, 512, 1024 frames
+	OutputDeviceUID string       // Single output device for entire engine
+	ErrorHandler    ErrorHandler // Optional: defaults to DefaultErrorHandler
+	// ❌ REMOVED: AudioDeviceUID - individual channels bind to their own input devices
+	// ❌ REMOVED: MidiDeviceUID - individual channels bind to their own MIDI devices  
+	// ❌ REMOVED: SampleRate - AVAudioEngine handles sample rate conversion automatically
 }
 
 // NewEngine creates a new audio engine with the specified configuration
@@ -55,18 +71,32 @@ func NewEngine(config EngineConfig) (*Engine, error) {
 	if config.BufferSize <= 0 {
 		config.BufferSize = 512 // Default buffer size
 	}
-	if config.SampleRate <= 0 {
-		config.SampleRate = 44100.0 // Default sample rate
+	if config.OutputDeviceUID == "" {
+		return nil, fmt.Errorf("OutputDeviceUID is required in EngineConfig")
 	}
 	if config.ErrorHandler == nil {
 		config.ErrorHandler = &DefaultErrorHandler{}
 	}
 
+	// Validate output device exists and is online
+	audioDevices, err := devices.GetAudio()
+	if err != nil {
+		return nil, fmt.Errorf("failed to enumerate audio devices: %w", err)
+	}
+
+	device := audioDevices.ByUID(config.OutputDeviceUID)
+	if device == nil {
+		return nil, fmt.Errorf("output device with UID %s not found", config.OutputDeviceUID)
+	}
+
+	if !device.IsOnline {
+		return nil, fmt.Errorf("output device %s is not online", config.OutputDeviceUID)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Create AVFoundation engine with audio specifications
+	// Create AVFoundation engine (no sample rate - AVAudioEngine handles automatically)
 	audioSpec := engine.AudioSpec{
-		SampleRate:   config.SampleRate,
 		BufferSize:   config.BufferSize,
 		BitDepth:     32, // AVAudioEngine uses 32-bit float internally
 		ChannelCount: 2,  // Stereo
@@ -78,39 +108,41 @@ func NewEngine(config EngineConfig) (*Engine, error) {
 		return nil, fmt.Errorf("failed to create AVFoundation engine: %w", err)
 	}
 
-	engine := &Engine{
-		ctx:            ctx,
-		cancel:         cancel,
-		channels:       make(map[string]Channel),
-		avEngine:       avEngine,
-		inputNodes:     make(map[string]unsafe.Pointer),
-		bufferSize:     config.BufferSize,
-		sampleRate:     config.SampleRate,
-		audioDeviceUID: config.AudioDeviceUID,
-		midiDeviceUID:  config.MidiDeviceUID,
-		errorHandler:   config.ErrorHandler,
+	engineInstance := &Engine{
+		id:               uuid.New(),
+		name:             "MacAudio Engine",
+		ctx:              ctx,
+		cancel:           cancel,
+		channels:         make(map[string]Channel),
+		avEngine:         avEngine,
+		inputNodes:       make(map[string]unsafe.Pointer),
+		bufferSize:       config.BufferSize,
+		outputDeviceUID:  config.OutputDeviceUID,
+		errorHandler:     config.ErrorHandler,
+		initState:        EngineCreated,
 	}
 
 	// Initialize master channel (always present)
-	masterChannel, err := NewMasterChannel("master", engine)
+	masterChannel, err := NewMasterChannel("Master", engineInstance)
 	if err != nil {
 		avEngine.Destroy() // Clean up AVFoundation engine
 		cancel()
 		return nil, fmt.Errorf("failed to create master channel: %w", err)
 	}
-	engine.masterChannel = masterChannel
-	engine.channels["master"] = masterChannel
+	engineInstance.masterChannel = masterChannel
+	engineInstance.channels[masterChannel.GetIDString()] = masterChannel // UUID to string conversion
+	engineInstance.initState = MasterReady
 
 	// Initialize device monitor
-	engine.deviceMonitor = NewDeviceMonitor(engine)
+	engineInstance.deviceMonitor = NewDeviceMonitor(engineInstance)
 
 	// Initialize dispatcher for serialized topology changes
-	engine.dispatcher = NewDispatcher(engine)
+	engineInstance.dispatcher = NewDispatcher(engineInstance)
 
 	// Initialize serializer for state persistence
-	engine.serializer = NewSerializer(engine)
+	engineInstance.serializer = NewSerializer(engineInstance)
 
-	return engine, nil
+	return engineInstance, nil
 }
 
 // Start begins engine operation with device binding and monitoring
@@ -122,31 +154,11 @@ func (e *Engine) Start() error {
 		return fmt.Errorf("engine is already running")
 	}
 
-	// Start AVFoundation engine first
-	// Note: AVFoundation engine should only be started when audio graph is complete
-	// For now, we defer starting until channels are properly configured
-	// The actual start happens when the first channel requires audio processing
-
-	// Prepare the engine but don't start yet
+	// Prepare the AVFoundation engine but don't start yet
+	// The actual start happens when the audio graph is complete
 	e.avEngine.Prepare()
 
-	// Bind to audio device if specified
-	if e.audioDeviceUID != "" {
-		if err := e.bindAudioDevice(e.audioDeviceUID); err != nil {
-			e.avEngine.Stop()
-			return fmt.Errorf("failed to bind audio device: %w", err)
-		}
-	}
-
-	// Bind to MIDI device if specified
-	if e.midiDeviceUID != "" {
-		if err := e.bindMidiDevice(e.midiDeviceUID); err != nil {
-			e.avEngine.Stop()
-			return fmt.Errorf("failed to bind MIDI device: %w", err)
-		}
-	}
-
-	// Start device monitoring (50ms polling)
+	// Start device monitoring with adaptive polling
 	if err := e.deviceMonitor.Start(); err != nil {
 		e.avEngine.Stop()
 		return fmt.Errorf("failed to start device monitor: %w", err)
@@ -161,9 +173,7 @@ func (e *Engine) Start() error {
 
 	e.isRunning = true
 	return nil
-}
-
-// Stop halts all engine operations and cleanup
+}// Stop halts all engine operations and cleanup
 func (e *Engine) Stop() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -197,6 +207,42 @@ func (e *Engine) Stop() error {
 
 	e.isRunning = false
 	return nil
+}
+
+// UUID Helper Methods (following hybrid pattern)
+
+// GetID returns the engine's UUID
+func (e *Engine) GetID() uuid.UUID {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.id
+}
+
+// GetIDString returns the engine's UUID as string
+func (e *Engine) GetIDString() string {
+	return e.GetID().String()
+}
+
+// GetName returns the engine name
+func (e *Engine) GetName() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.name
+}
+
+// SetName sets the engine name
+func (e *Engine) SetName(name string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.name = name
+}
+
+// GetChannelByID retrieves a channel by its UUID (using hybrid pattern)
+func (e *Engine) GetChannelByID(id uuid.UUID) (Channel, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	channel, exists := e.channels[id.String()] // Convert UUID to string for map lookup
+	return channel, exists
 }
 
 // IsRunning returns whether the engine is currently running
@@ -285,67 +331,10 @@ func (e *Engine) GetConfiguration() EngineConfig {
 	defer e.mu.RUnlock()
 
 	return EngineConfig{
-		BufferSize:     e.bufferSize,
-		SampleRate:     e.sampleRate,
-		AudioDeviceUID: e.audioDeviceUID,
-		MidiDeviceUID:  e.midiDeviceUID,
-		ErrorHandler:   e.errorHandler,
+		BufferSize:      e.bufferSize,
+		OutputDeviceUID: e.outputDeviceUID,
+		ErrorHandler:    e.errorHandler,
 	}
-}
-
-// bindAudioDevice binds the engine to a specific audio device
-func (e *Engine) bindAudioDevice(uid string) error {
-	// Get current audio devices to validate UID
-	audioDevices, err := devices.GetAudio()
-	if err != nil {
-		return fmt.Errorf("failed to enumerate audio devices: %w", err)
-	}
-
-	device := audioDevices.ByUID(uid)
-	if device == nil {
-		return fmt.Errorf("audio device with UID %s not found", uid)
-	}
-
-	if !device.IsOnline {
-		return fmt.Errorf("audio device %s is not online", uid)
-	}
-
-	// Update engine state
-	e.audioDeviceUID = uid
-
-	// Note: AVAudioEngine automatically uses the system's default audio device
-	// Device-specific binding would require more complex AudioUnit integration
-	// For now, we track the intended device and validate it exists
-	// Future enhancement: Implement device-specific AudioUnit configuration
-
-	return nil
-}
-
-// bindMidiDevice binds the engine to a specific MIDI device
-func (e *Engine) bindMidiDevice(uid string) error {
-	// Get current MIDI devices to validate UID
-	midiDevices, err := devices.GetMIDI()
-	if err != nil {
-		return fmt.Errorf("failed to enumerate MIDI devices: %w", err)
-	}
-
-	device := midiDevices.ByUID(uid)
-	if device == nil {
-		return fmt.Errorf("MIDI device with UID %s not found", uid)
-	}
-
-	if !device.IsOnline {
-		return fmt.Errorf("MIDI device %s is not online", uid)
-	}
-
-	// Update engine state
-	e.midiDeviceUID = uid
-
-	// Note: MIDI integration requires CoreMIDI integration
-	// For now, we track the intended device and validate it exists
-	// Future enhancement: Implement CoreMIDI input integration
-
-	return nil
 }
 
 // addChannel adds a channel to the engine (internal method called by dispatcher)
@@ -353,12 +342,12 @@ func (e *Engine) addChannel(channel Channel) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	id := channel.GetID()
-	if _, exists := e.channels[id]; exists {
-		return fmt.Errorf("channel with ID %s already exists", id)
+	idString := channel.GetIDString() // Convert UUID to string for map key
+	if _, exists := e.channels[idString]; exists {
+		return fmt.Errorf("channel with ID %s already exists", idString)
 	}
 
-	e.channels[id] = channel
+	e.channels[idString] = channel
 	return nil
 }
 

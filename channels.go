@@ -1,9 +1,14 @@
 package macaudio
 
+import "github.com/google/uuid"
+
 // Channel represents the common interface for all audio channel types
 type Channel interface {
-	// Identity and lifecycle
-	GetID() string
+	// Identity and lifecycle (UUID hybrid pattern)
+	GetID() uuid.UUID        // Returns UUID for type safety
+	GetIDString() string     // Returns string for map keys and JSON
+	GetName() string         // Channel name
+	SetName(name string)     // Set channel name
 	GetType() ChannelType
 	Start() error
 	Stop() error

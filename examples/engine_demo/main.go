@@ -18,24 +18,22 @@ func main() {
 	
 	// Create engine configuration
 	config := macaudio.EngineConfig{
-		BufferSize:   512,
-		SampleRate:   44100.0,
-		ErrorHandler: &macaudio.DefaultErrorHandler{},
+		BufferSize:      512,
+		OutputDeviceUID: "BuiltInSpeakerDevice", // Will be updated below if device found
+		ErrorHandler:    &macaudio.DefaultErrorHandler{},
 	}
-	
+
 	// Optionally bind to default audio devices
 	if audioDevices, err := devices.GetAudio(); err == nil && len(audioDevices) > 0 {
 		// Use the first available output device
 		for _, device := range audioDevices {
 			if device.CanOutput() && device.IsOnline {
-				config.AudioDeviceUID = device.UID
+				config.OutputDeviceUID = device.UID // Updated field name
 				fmt.Printf("Binding to audio device: %s (%s)\n", device.Name, device.UID)
 				break
 			}
 		}
-	}
-	
-	// Create and start engine
+	}	// Create and start engine
 	engine, err := macaudio.NewEngine(config)
 	if err != nil {
 		log.Fatalf("Failed to create engine: %v", err)
