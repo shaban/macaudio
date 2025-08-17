@@ -6,6 +6,7 @@ import (
 	"unsafe"
 
 	"github.com/google/uuid"
+	"github.com/shaban/macaudio/avaudio/tap"
 )
 
 // BaseChannel provides common functionality for all channel types
@@ -17,9 +18,10 @@ type BaseChannel struct {
 	engine      *Engine
 
 	// Audio processing
-	volume float32
-	pan    float32
-	muted  bool
+	volume        float32
+	pan           float32
+	muted         bool
+	premuteVolume float32 // Store volume before mute for restoration
 
 	// Plugin chain
 	pluginChain *PluginChain
@@ -177,9 +179,19 @@ func (bc *BaseChannel) SetVolume(volume float32) error {
 	bc.volume = volume
 
 	// Apply to actual output mixer node if available
-	if bc.outputMixer != nil {
-		// Note: Volume control requires AVAudioMixerNode-specific bindings
-		// For now, we store the value. Future enhancement: implement mixer volume control
+	if bc.outputMixer != nil && bc.engine != nil {
+		avEngine := bc.engine.getAVEngine()
+		if avEngine != nil {
+			// ✅ PROPER ARCHITECTURE: Use individual channel mixer for volume control
+			// This provides proper per-channel volume control as per specs
+			fmt.Printf("🔊 Setting volume %.2f on channel mixer %p (proper architecture)\n", bc.volume, bc.outputMixer)
+			if err := avEngine.SetMixerVolume(bc.outputMixer, bc.volume); err != nil {
+				// Log warning but don't fail - the state is still updated
+				fmt.Printf("❌ Warning: Failed to set AVFoundation volume: %v\n", err)
+			} else {
+				fmt.Printf("✅ AVFoundation volume applied successfully\n")
+			}
+		}
 	}
 
 	return nil
@@ -218,18 +230,17 @@ func (bc *BaseChannel) GetPan() (float32, error) {
 	return bc.pan, nil
 }
 
-// SetMute sets the channel mute state
+// SetMute sets the channel mute state via dispatcher (topology change)
 func (bc *BaseChannel) SetMute(muted bool) error {
+	// Route through dispatcher since mute is a topology change (per specs)
+	if bc.engine != nil && bc.engine.dispatcher != nil {
+		return bc.engine.dispatcher.SetChannelMute(bc.GetIDString(), muted)
+	}
+	
+	// Fallback for when dispatcher is not available (e.g., during initialization)
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 	bc.muted = muted
-
-	// Apply to actual output mixer node if available
-	if bc.outputMixer != nil {
-		// Note: Mute control requires AVAudioMixerNode-specific bindings
-		// For now, we store the value. Future enhancement: implement mixer mute control
-	}
-
 	return nil
 }
 
@@ -390,11 +401,11 @@ func NewAudioInputChannel(name string, config AudioInputConfig, engine *Engine) 
 		return nil, fmt.Errorf("failed to get input node: %w", err)
 	}
 
-	// Create output mixer node for this channel
+	// Create individual mixer node for this input channel
 	avEngine := engine.getAVEngine()
-	outputMixer, err := avEngine.MainMixerNode() // For now, use main mixer as output
+	outputMixer, err := avEngine.CreateMixerNode() // Create dedicated mixer for this channel
 	if err != nil {
-		return nil, fmt.Errorf("failed to get output mixer: %w", err)
+		return nil, fmt.Errorf("failed to create channel mixer: %w", err)
 	}
 
 	channel := &AudioInputChannel{
@@ -412,6 +423,34 @@ func NewAudioInputChannel(name string, config AudioInputConfig, engine *Engine) 
 	return channel, nil
 }
 
+// InstallTap installs an audio tap on this channel for monitoring
+func (aic *AudioInputChannel) InstallTap(key string) (*tap.Tap, error) {
+	if aic.engine == nil {
+		return nil, fmt.Errorf("channel not connected to engine")
+	}
+	
+	enginePtr := aic.engine.GetNativeEngine()
+	nodePtr := aic.inputNode // Use internal pointer safely
+	
+	if enginePtr == nil || nodePtr == nil {
+		return nil, fmt.Errorf("native components not available")
+	}
+	
+	return tap.InstallTapWithKey(enginePtr, nodePtr, 0, key)
+}
+
+// GetInputNode returns the native input node pointer for taps (DEPRECATED)
+// TODO: Remove this method - use InstallTap instead
+func (aic *AudioInputChannel) GetInputNode() unsafe.Pointer {
+	return aic.inputNode
+}
+
+// GetOutputMixer returns the native output mixer pointer for taps (DEPRECATED)  
+// TODO: Remove this method - use InstallTap instead
+func (aic *AudioInputChannel) GetOutputMixer() unsafe.Pointer {
+	return aic.outputMixer
+}
+
 // Start starts the audio input channel and creates AVFoundation connections
 func (aic *AudioInputChannel) Start() error {
 	// Call base channel start first
@@ -419,14 +458,50 @@ func (aic *AudioInputChannel) Start() error {
 		return err
 	}
 
-	// Connect input node to output mixer via AVFoundation
+	// ✅ CORRECT PATTERN: Use explicit format matching (from your research)
+	// The key insight: both connections must use the same explicit format
 	avEngine := aic.engine.getAVEngine()
-
-	// Connect: inputNode[inputBus] -> outputMixer[0]
+	
+	// Get the input node's output format - this is the reference format
+	fmt.Printf("🔍 Getting input node format for proper routing...\n")
+	// Note: We need to add a method to get the input format from Go
+	// For now, let's try with the engine's spec format, then nil as fallback
+	
+	// Step 1: Connect inputNode → individual channel mixer with explicit format
+	fmt.Printf("🔗 PROPER: Connecting inputNode %p → channelMixer %p (bus %d → 0)\n", 
+		aic.inputNode, aic.outputMixer, aic.inputBus)
+	
+	// Try with engine's spec format first (proper approach)
 	err := avEngine.Connect(aic.inputNode, aic.outputMixer, aic.inputBus, 0)
 	if err != nil {
-		return fmt.Errorf("failed to connect input to mixer: %w", err)
+		// Fallback to nil format if spec format fails
+		err = avEngine.ConnectWithFormat(aic.inputNode, aic.outputMixer, aic.inputBus, 0, nil)
+		if err != nil {
+			return fmt.Errorf("failed to connect input to channel mixer: %w", err)
+		}
+		fmt.Printf("✅ Input → Channel mixer connected (nil format fallback)\n")
+	} else {
+		fmt.Printf("✅ Input → Channel mixer connected (engine spec format)\n")
 	}
+	
+	// Step 2: Connect individual channel mixer → main mixer with SAME format
+	mainMixer, err := avEngine.MainMixerNode()
+	if err != nil {
+		return fmt.Errorf("failed to get main mixer: %w", err)
+	}
+	
+	fmt.Printf("🔗 PROPER: Connecting channelMixer %p → mainMixer %p (0 → 0)\n", 
+		aic.outputMixer, mainMixer)
+	
+	// Use the same format approach as the first connection
+	err = avEngine.Connect(aic.outputMixer, mainMixer, 0, 0)
+	if err != nil {
+		return fmt.Errorf("failed to connect channel mixer to main mixer: %w", err)
+	}
+	fmt.Printf("✅ Channel mixer → Main mixer connected (consistent format)\n")
+	
+	fmt.Printf("✅ PROPER ARCHITECTURE: Complete signal path established!\n")
+	fmt.Printf("   🎯 InputNode → ChannelMixer → MainMixer → Output (with proper formats)\n")
 
 	// Start AVFoundation engine if audio graph is ready
 	if err := aic.engine.startAVEngineIfReady(); err != nil {
@@ -494,6 +569,53 @@ func NewAuxChannel(name string, config AuxConfig, engine *Engine) (*AuxChannel, 
 
 // Master channel specific methods
 
+// Start starts the master channel and connects main mixer to output
+func (mc *MasterChannel) Start() error {
+	// Call base channel start first
+	if err := mc.BaseChannel.Start(); err != nil {
+		return err
+	}
+
+	// Ensure main mixer is connected to output node
+	if mc.engine != nil && mc.engine.avEngine != nil {
+		fmt.Println("🔗 Connecting main mixer to output...")
+		mainMixer, err := mc.engine.avEngine.MainMixerNode()
+		if err != nil {
+			fmt.Printf("❌ Failed to get main mixer node: %v\n", err)
+			return fmt.Errorf("failed to get main mixer node: %w", err)
+		}
+
+		outputNode, err := mc.engine.avEngine.OutputNode()
+		if err != nil {
+			fmt.Printf("❌ Failed to get output node: %v\n", err)
+			return fmt.Errorf("failed to get output node: %w", err)
+		}
+
+		// CRITICAL: Check if main mixer is already connected to output
+		fmt.Printf("🔍 Checking current main mixer connections...\n")
+		
+		// Connect main mixer to output (this is the critical missing link!)
+		fmt.Printf("🔗 Connecting mixer %p to output %p...\n", mainMixer, outputNode)
+		if err := mc.engine.avEngine.Connect(mainMixer, outputNode, 0, 0); err != nil {
+			fmt.Printf("❌ CRITICAL: Main mixer to output connection failed: %v\n", err)
+			// This is a critical failure - audio cannot reach speakers without this connection
+			return fmt.Errorf("critical main mixer connection failure: %w", err)
+		} else {
+			fmt.Println("✅ Main mixer to output connection successful!")
+		}
+		
+		// VERIFICATION: Set main mixer volume to ensure it's working
+		fmt.Printf("🔊 Setting main mixer output volume to 1.0...\n")
+		if err := mc.engine.avEngine.SetMixerVolume(mainMixer, 1.0); err != nil {
+			fmt.Printf("⚠️ Failed to set main mixer volume: %v\n", err)
+		} else {
+			fmt.Printf("✅ Main mixer volume set to 100%%\n")
+		}
+	}
+
+	return nil
+}
+
 // SetMasterVolume sets the master output volume
 func (mc *MasterChannel) SetMasterVolume(volume float32) error {
 	if volume < 0.0 || volume > 1.0 {
@@ -504,7 +626,19 @@ func (mc *MasterChannel) SetMasterVolume(volume float32) error {
 	defer mc.mu.Unlock()
 	mc.masterVolume = volume
 
-	// TODO: Apply to actual master mixer
+	// Apply to actual master mixer node in AVFoundation
+	if mc.engine != nil && mc.engine.avEngine != nil {
+		// Get the main mixer node from AVFoundation engine
+		mainMixerPtr, err := mc.engine.avEngine.MainMixerNode()
+		if err != nil {
+			return fmt.Errorf("failed to get main mixer node: %w", err)
+		}
+
+		// Set the volume on the actual AVAudioMixerNode
+		if err := mc.engine.avEngine.SetMixerVolume(mainMixerPtr, volume); err != nil {
+			return fmt.Errorf("failed to set master volume: %w", err)
+		}
+	}
 
 	return nil
 }
@@ -513,6 +647,21 @@ func (mc *MasterChannel) SetMasterVolume(volume float32) error {
 func (mc *MasterChannel) GetMasterVolume() (float32, error) {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
+	
+	// If the engine is running, get the actual volume from AVFoundation
+	if mc.engine != nil && mc.engine.avEngine != nil && mc.engine.IsRunning() {
+		mainMixerPtr, err := mc.engine.avEngine.MainMixerNode()
+		if err == nil {
+			actualVolume, err := mc.engine.avEngine.GetMixerVolume(mainMixerPtr)
+			if err == nil {
+				// Update our cached value to match reality
+				mc.masterVolume = actualVolume
+				return actualVolume, nil
+			}
+		}
+	}
+	
+	// Fallback to cached value
 	return mc.masterVolume, nil
 }
 

@@ -16,14 +16,19 @@ void audioengine_remove_taps(AudioEngine* wrapper);
 AudioEngineResult audioengine_output_node(AudioEngine* wrapper);
 AudioEngineResult audioengine_input_node(AudioEngine* wrapper);
 AudioEngineResult audioengine_main_mixer_node(AudioEngine* wrapper);
+AudioEngineResult audioengine_create_mixer_node(AudioEngine* wrapper);
 void audioengine_destroy(AudioEngine* wrapper);
 const char* audioengine_attach(AudioEngine* wrapper, void* nodePtr);
 const char* audioengine_detach(AudioEngine* wrapper, void* nodePtr);
 const char* audioengine_connect(AudioEngine* wrapper, void* sourcePtr, void* destPtr, int fromBus, int toBus);
 const char* audioengine_connect_with_format(AudioEngine* wrapper, void* sourcePtr, void* destPtr, int fromBus, int toBus, void* formatPtr);
-const char* audioengine_set_buffer_size(AudioEngine* wrapper, int bufferSize);
 void audioengine_set_mixer_pan(AudioEngine* wrapper, float pan);
 const char* audioengine_disconnect_node_input(AudioEngine* wrapper, void* nodePtr, int inputBus);
+AudioEngineResult audioengine_create_format(double sampleRate, int channelCount, int bitDepth);
+void audioengine_release_format(void* formatPtr);
+const char* audioengine_set_buffer_size(AudioEngine* wrapper, int bufferSize);
+const char* audioengine_set_mixer_volume(AudioEngine* wrapper, void* mixerNodePtr, float volume);
+float audioengine_get_mixer_volume(AudioEngine* wrapper, void* mixerNodePtr);
 */
 import "C"
 import (
@@ -68,17 +73,33 @@ func New(spec AudioSpec) (*Engine, error) {
 		return nil, errors.New("engine creation returned null pointer")
 	}
 
-	return &Engine{
+	engine := &Engine{
 		ptr:  (*C.AudioEngine)(result.result),
 		spec: spec,
-	}, nil
+	}
+
+	// Apply the specified buffer size immediately after creation
+	if spec.BufferSize > 0 {
+		if err := engine.SetBufferSize(spec.BufferSize); err != nil {
+			// If we can't set the buffer size, clean up and return error
+			engine.Destroy()
+			return nil, errors.New("failed to set buffer size: " + err.Error())
+		}
+	}
+
+	return engine, nil
 }
 
-// GetSpec returns the audio specifications for this engine
-func (e *Engine) GetSpec() AudioSpec {
-	if e == nil {
-		return AudioSpec{}
+// GetNativeEngine returns the native AVAudioEngine pointer for taps
+func (e *Engine) GetNativeEngine() unsafe.Pointer {
+	if e.ptr != nil {
+		return unsafe.Pointer(e.ptr.engine) // Access the actual AVAudioEngine
 	}
+	return nil
+}
+
+// GetSpec returns the engine's audio specification
+func (e *Engine) GetSpec() AudioSpec {
 	return e.spec
 }
 
@@ -206,6 +227,56 @@ func (e *Engine) MainMixerNode() (unsafe.Pointer, error) {
 	}
 
 	return unsafe.Pointer(result.result), nil
+}
+
+// CreateMixerNode creates a new individual mixer node for channels
+func (e *Engine) CreateMixerNode() (unsafe.Pointer, error) {
+	if e == nil || e.ptr == nil {
+		return nil, errors.New("engine is nil")
+	}
+
+	result := C.audioengine_create_mixer_node(e.ptr)
+	if result.error != nil {
+		return nil, errors.New(C.GoString(result.error))
+	}
+
+	return unsafe.Pointer(result.result), nil
+}
+
+// SetMixerVolume sets the volume of a specific mixer node
+func (e *Engine) SetMixerVolume(mixerNodePtr unsafe.Pointer, volume float32) error {
+	if e == nil || e.ptr == nil {
+		return errors.New("engine is nil")
+	}
+
+	if mixerNodePtr == nil {
+		return errors.New("mixer node pointer is nil")
+	}
+
+	if volume < 0.0 || volume > 1.0 {
+		return errors.New("volume must be between 0.0 and 1.0")
+	}
+
+	result := C.audioengine_set_mixer_volume(e.ptr, mixerNodePtr, C.float(volume))
+	if result != nil {
+		return errors.New(C.GoString(result))
+	}
+
+	return nil
+}
+
+// GetMixerVolume gets the volume of a specific mixer node
+func (e *Engine) GetMixerVolume(mixerNodePtr unsafe.Pointer) (float32, error) {
+	if e == nil || e.ptr == nil {
+		return 0.0, errors.New("engine is nil")
+	}
+
+	if mixerNodePtr == nil {
+		return 0.0, errors.New("mixer node pointer is nil")
+	}
+
+	volume := C.audioengine_get_mixer_volume(e.ptr, mixerNodePtr)
+	return float32(volume), nil
 }
 
 // Destroy properly tears down the engine and frees all resources

@@ -17,18 +17,20 @@ void audioengine_release_format(void* formatPtr);
 
 // Create new AVAudioEngine
 AudioEngineResult audioengine_new() {
-    AVAudioEngine* engine = [[AVAudioEngine alloc] init];
-    if (!engine) {
-        return (AudioEngineResult){NULL, "Audio engine creation failed"};
-    }
+    @autoreleasepool {
+        AVAudioEngine* engine = [[AVAudioEngine alloc] init];
+        if (!engine) {
+            return (AudioEngineResult){NULL, "Audio engine creation failed"};
+        }
 
-    AudioEngine* wrapper = malloc(sizeof(AudioEngine));
-    if (!wrapper) {
-        return (AudioEngineResult){NULL, "Memory allocation failed"};
-    }
+        AudioEngine* wrapper = malloc(sizeof(AudioEngine));
+        if (!wrapper) {
+            return (AudioEngineResult){NULL, "Memory allocation failed"};
+        }
 
-    wrapper->engine = (__bridge_retained void*)engine;
-    return (AudioEngineResult){wrapper, NULL};  // NULL = success
+        wrapper->engine = (__bridge_retained void*)engine;
+        return (AudioEngineResult){wrapper, NULL};  // NULL = success
+    }
 }
 
 // Prepare the engine for starting
@@ -43,28 +45,30 @@ void audioengine_prepare(AudioEngine* wrapper) {
 
 // Start the engine
 const char* audioengine_start(AudioEngine* wrapper) {
-    if (!wrapper) {
-        return "Engine wrapper is null";
-    }
-    
-    if (!wrapper->engine) {
-        return "Engine is invalid";
-    }
-
-    AVAudioEngine* engine = (__bridge AVAudioEngine*)wrapper->engine;
-    NSError* error = nil;
-
-    @try {
-        bool success = [engine startAndReturnError:&error];
-        if (error) {
-            NSLog(@"Engine start error: %@", error.localizedDescription);
-            return "Engine start failed";
+    @autoreleasepool {
+        if (!wrapper) {
+            return "Engine wrapper is null";
         }
-        return success ? NULL : "Engine start failed";  // NULL = success
-    }
-    @catch (NSException* exception) {
-        NSLog(@"Engine start exception: %@", exception.reason);
-        return "Engine start failed with exception";
+        
+        if (!wrapper->engine) {
+            return "Engine is invalid";
+        }
+
+        AVAudioEngine* engine = (__bridge AVAudioEngine*)wrapper->engine;
+        NSError* error = nil;
+
+        @try {
+            bool success = [engine startAndReturnError:&error];
+            if (error) {
+                NSLog(@"Engine start error: %@", error.localizedDescription);
+                return "Engine start failed";
+            }
+            return success ? NULL : "Engine start failed";  // NULL = success
+        }
+        @catch (NSException* exception) {
+            NSLog(@"Engine start exception: %@", exception.reason);
+            return "Engine start failed with exception";
+        }
     }
 }
 
@@ -183,6 +187,28 @@ AudioEngineResult audioengine_main_mixer_node(AudioEngine* wrapper) {
     }
     
     return (AudioEngineResult){(__bridge void*)mainMixer, NULL};  // NULL = success
+}
+
+// Create a new individual mixer node for channels
+AudioEngineResult audioengine_create_mixer_node(AudioEngine* wrapper) {
+    @autoreleasepool {
+        if (!wrapper || !wrapper->engine) {
+            return (AudioEngineResult){NULL, "Invalid engine wrapper"};
+        }
+
+        AVAudioEngine* engine = (__bridge AVAudioEngine*)wrapper->engine;
+        
+        // Create a new mixer node
+        AVAudioMixerNode* newMixer = [[AVAudioMixerNode alloc] init];
+        if (!newMixer) {
+            return (AudioEngineResult){NULL, "Failed to create mixer node"};
+        }
+        
+        // Attach the mixer to the engine
+        [engine attachNode:newMixer];
+        
+        return (AudioEngineResult){(__bridge_retained void*)newMixer, NULL};
+    }
 }
 
 // Destroy the engine and free resources
@@ -491,33 +517,37 @@ const char* audioengine_disconnect_node_input(AudioEngine* wrapper, void* nodePt
 
 // Create AVAudioFormat from audio specifications
 AudioEngineResult audioengine_create_format(double sampleRate, int channelCount, int bitDepth) {
-    @try {
-        // Use the standard stereo format and let AVFoundation handle the details
-        // The exact bit depth handling is complex with AVFoundation's format system
-        AVAudioFormat* format = [[AVAudioFormat alloc]
-            initStandardFormatWithSampleRate:sampleRate
-            channels:(AVAudioChannelCount)channelCount];
+    @autoreleasepool {
+        @try {
+            // Use the standard stereo format and let AVFoundation handle the details
+            // The exact bit depth handling is complex with AVFoundation's format system
+            AVAudioFormat* format = [[AVAudioFormat alloc]
+                initStandardFormatWithSampleRate:sampleRate
+                channels:(AVAudioChannelCount)channelCount];
 
-        if (format) {
-            NSLog(@"Created AVAudioFormat: %.0f Hz, %d channels (standard format)",
-                  sampleRate, channelCount);
-            return (AudioEngineResult){(__bridge_retained void*)format, NULL};  // NULL = success
-        } else {
-            NSLog(@"Failed to create AVAudioFormat");
-            return (AudioEngineResult){NULL, "Failed to create audio format"};
+            if (format) {
+                NSLog(@"Created AVAudioFormat: %.0f Hz, %d channels (standard format)",
+                      sampleRate, channelCount);
+                return (AudioEngineResult){(__bridge_retained void*)format, NULL};  // NULL = success
+            } else {
+                NSLog(@"Failed to create AVAudioFormat");
+                return (AudioEngineResult){NULL, "Failed to create audio format"};
+            }
         }
-    }
-    @catch (NSException* exception) {
-        NSLog(@"Exception creating AVAudioFormat: %@", exception.reason);
-        return (AudioEngineResult){NULL, "Exception creating audio format"};
+        @catch (NSException* exception) {
+            NSLog(@"Exception creating AVAudioFormat: %@", exception.reason);
+            return (AudioEngineResult){NULL, "Exception creating audio format"};
+        }
     }
 }
 
 // Release AVAudioFormat
 void audioengine_release_format(void* formatPtr) {
-    if (formatPtr) {
-        AVAudioFormat* format = (__bridge_transfer AVAudioFormat*)formatPtr;
-        format = nil; // ARC will handle deallocation
+    @autoreleasepool {
+        if (formatPtr) {
+            AVAudioFormat* format = (__bridge_transfer AVAudioFormat*)formatPtr;
+            format = nil; // ARC will handle deallocation
+        }
     }
 }
 
@@ -574,5 +604,57 @@ const char* audioengine_set_buffer_size(AudioEngine* wrapper, int bufferSize) {
     @catch (NSException* exception) {
         NSLog(@"Exception setting buffer size: %@", exception.reason);
         return "Failed to set buffer size";
+    }
+}
+
+// Set volume of a specific mixer node
+const char* audioengine_set_mixer_volume(AudioEngine* wrapper, void* mixerNodePtr, float volume) {
+    @autoreleasepool {
+        if (!wrapper) {
+            return "Engine wrapper is null";
+        }
+        
+        if (!wrapper->engine) {
+            return "Engine is null";
+        }
+        
+        if (!mixerNodePtr) {
+            return "Mixer node pointer is null";
+        }
+        
+        if (volume < 0.0f || volume > 1.0f) {
+            return "Volume must be between 0.0 and 1.0";
+        }
+        
+        @try {
+            AVAudioMixerNode* mixerNode = (__bridge AVAudioMixerNode*)mixerNodePtr;
+            
+            // Set the output volume on the mixer node
+            mixerNode.outputVolume = volume;
+            
+            return NULL;  // NULL = success
+        }
+        @catch (NSException* exception) {
+            NSLog(@"Exception setting mixer volume: %@", exception.reason);
+            return "Failed to set mixer volume";
+        }
+    }
+}
+
+// Get volume of a specific mixer node
+float audioengine_get_mixer_volume(AudioEngine* wrapper, void* mixerNodePtr) {
+    @autoreleasepool {
+        if (!wrapper || !wrapper->engine || !mixerNodePtr) {
+            return 0.0f;
+        }
+        
+        @try {
+            AVAudioMixerNode* mixerNode = (__bridge AVAudioMixerNode*)mixerNodePtr;
+            return mixerNode.outputVolume;
+        }
+        @catch (NSException* exception) {
+            NSLog(@"Exception getting mixer volume: %@", exception.reason);
+            return 0.0f;
+        }
     }
 }

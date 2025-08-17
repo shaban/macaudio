@@ -230,8 +230,9 @@ func (dm *DeviceMonitor) updatePerformanceStats(elapsed time.Duration) {
 		dm.maxCheckTime = elapsed
 	}
 	
-	// Log if we exceed our target runtime (50μs)
-	if elapsed > 50*time.Microsecond {
+	// Log only if we significantly exceed our target runtime (200μs instead of 50μs) 
+	// to reduce noise during normal operation
+	if elapsed > 200*time.Microsecond {
 		dm.engine.errorHandler.HandleError(
 			fmt.Errorf("device check took %v, target is 50μs", elapsed))
 	}

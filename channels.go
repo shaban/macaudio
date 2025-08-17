@@ -5,25 +5,25 @@ import "github.com/google/uuid"
 // Channel represents the common interface for all audio channel types
 type Channel interface {
 	// Identity and lifecycle (UUID hybrid pattern)
-	GetID() uuid.UUID        // Returns UUID for type safety
-	GetIDString() string     // Returns string for map keys and JSON
-	GetName() string         // Channel name
-	SetName(name string)     // Set channel name
+	GetID() uuid.UUID    // Returns UUID for type safety
+	GetIDString() string // Returns string for map keys and JSON
+	GetName() string     // Channel name
+	SetName(name string) // Set channel name
 	GetType() ChannelType
 	Start() error
 	Stop() error
 	IsRunning() bool
-	
+
 	// Connections
 	ConnectTo(target Channel, bus int) error
 	DisconnectFrom(target Channel, bus int) error
 	GetConnections() []Connection
-	
+
 	// Plugin chain management
 	GetPluginChain() *PluginChain
 	AddPlugin(blueprint PluginBlueprint, position int) (*PluginInstance, error)
 	RemovePlugin(instanceID string) error
-	
+
 	// Audio processing
 	SetVolume(volume float32) error
 	GetVolume() (float32, error)
@@ -31,7 +31,7 @@ type Channel interface {
 	GetPan() (float32, error)
 	SetMute(muted bool) error
 	GetMute() (bool, error)
-	
+
 	// Serialization for state persistence
 	GetState() ChannelState
 	SetState(state ChannelState) error
@@ -58,12 +58,12 @@ type Connection struct {
 
 // ChannelState represents the serializable state of a channel
 type ChannelState struct {
-	ID          string            `json:"id"`
-	Type        ChannelType       `json:"type"`
-	Volume      float32           `json:"volume"`
-	Pan         float32           `json:"pan"`
-	Muted       bool              `json:"muted"`
-	Connections []Connection      `json:"connections"`
-	PluginChain PluginChainState  `json:"pluginChain"`
+	ID          string                 `json:"id"`
+	Type        ChannelType            `json:"type"`
+	Volume      float32                `json:"volume"`
+	Pan         float32                `json:"pan"`
+	Muted       bool                   `json:"muted"`
+	Connections []Connection           `json:"connections"`
+	PluginChain PluginChainState       `json:"pluginChain"`
 	Config      map[string]interface{} `json:"config,omitempty"`
 }
