@@ -114,8 +114,8 @@ func TestNativeErrorMessages(t *testing.T) {
 			t.Fatal("Expected error from Start() with nil engine")
 		}
 
-		// The Go layer catches nil engine before calling C, so we expect Go-level error
-		expectedErrorSubstrings := []string{"engine", "not", "initialized"}
+		// Now that Go layer passes nil to C, we expect C-level error message
+		expectedErrorSubstrings := []string{"wrapper", "null"}
 		errorMsg := err.Error()
 
 		foundExpected := false
@@ -129,7 +129,7 @@ func TestNativeErrorMessages(t *testing.T) {
 		if !foundExpected {
 			t.Errorf("Error message '%s' doesn't contain expected substrings %v", errorMsg, expectedErrorSubstrings)
 		} else {
-			t.Logf("✅ Proper error message from Go layer: %s", errorMsg)
+			t.Logf("✅ Proper error message from C layer: %s", errorMsg)
 		}
 	})
 

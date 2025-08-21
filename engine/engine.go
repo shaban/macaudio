@@ -131,10 +131,6 @@ func NewEngine(outputDevice *devices.AudioDevice, sampleRateIndex int, bufferSiz
 
 // Start starts the audio engine. Returns an error if the engine fails to start.
 func (e *Engine) Start() error {
-	if e.nativeEngine == nil {
-		return errors.New("engine is not initialized")
-	}
-
 	errorStr := C.audioengine_start(e.nativeEngine)
 	if errorStr != nil {
 		return errors.New(C.GoString(errorStr))
@@ -294,26 +290,14 @@ func (e *Engine) GetMasterVolume() float32 {
 
 // IsRunning returns true if the engine is currently running
 func (e *Engine) IsRunning() bool {
-	if e.nativeEngine == nil {
-		return false // Engine not initialized
-	}
-
 	result := C.audioengine_is_running(e.nativeEngine)
-	if result == nil {
-		return false // Error occurred or not running
-	}
-
-	// The C function returns a string: "true" or "false" (or error message)
-	runningStr := C.GoString(result)
-	return runningStr == "true"
+	// C function returns NULL when engine IS running (success)
+	// Returns error string when NOT running or error occurred
+	return result == nil
 }
 
 // GetMainMixerNode returns a pointer to the main mixer node for advanced operations
 func (e *Engine) GetMainMixerNode() unsafe.Pointer {
-	if e.nativeEngine == nil {
-		return nil // Engine not initialized
-	}
-
 	result := C.audioengine_main_mixer_node(e.nativeEngine)
 	if result.error != nil || result.result == nil {
 		return nil // Error or null result
