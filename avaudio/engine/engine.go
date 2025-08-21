@@ -2,8 +2,8 @@ package engine
 
 /*
 #cgo CFLAGS: -x objective-c -fobjc-arc
-#cgo LDFLAGS: -framework AVFoundation -framework AudioToolbox -framework Foundation
-#include "native/engine.m"
+#cgo LDFLAGS: -L../../ -lmacaudio -Wl,-rpath,/Users/shaban/Code/macaudio
+#include "../../native/macaudio.h"
 // Function declarations for CGO
 AudioEngineResult audioengine_new();
 void audioengine_prepare(AudioEngine* wrapper);
@@ -26,9 +26,14 @@ void audioengine_set_mixer_pan(AudioEngine* wrapper, float pan);
 const char* audioengine_disconnect_node_input(AudioEngine* wrapper, void* nodePtr, int inputBus);
 AudioEngineResult audioengine_create_format(double sampleRate, int channelCount, int bitDepth);
 void audioengine_release_format(void* formatPtr);
+// NOTE: The above C format functions are legacy - Go code now uses the consolidated format system in format.go
 const char* audioengine_set_buffer_size(AudioEngine* wrapper, int bufferSize);
 const char* audioengine_set_mixer_volume(AudioEngine* wrapper, void* mixerNodePtr, float volume);
 float audioengine_get_mixer_volume(AudioEngine* wrapper, void* mixerNodePtr);
+const char* audioengine_disconnect_node_output(AudioEngine* wrapper, void* nodePtr, int outputBus);
+const char* audioengine_wait_for_readiness(AudioEngine* wrapper, double timeoutSeconds);
+const char* audioengine_is_ready_for_playback(AudioEngine* wrapper, bool* isReady);
+const char* audioengine_prime_with_silence(AudioEngine* wrapper, double timeoutSeconds);
 */
 import "C"
 import (
@@ -60,6 +65,10 @@ func DefaultAudioSpec() AudioSpec {
 type Engine struct {
 	ptr  *C.AudioEngine
 	spec AudioSpec
+
+	// Connection tracking for smart per-bus control (optional enhancement)
+	// mixerConnections maps mixer pointer -> bus -> source pointer
+	mixerConnections map[unsafe.Pointer]map[int]unsafe.Pointer
 }
 
 // New creates a new AVAudioEngine instance with specified audio settings
@@ -74,8 +83,9 @@ func New(spec AudioSpec) (*Engine, error) {
 	}
 
 	engine := &Engine{
-		ptr:  (*C.AudioEngine)(result.result),
-		spec: spec,
+		ptr:              (*C.AudioEngine)(result.result),
+		spec:             spec,
+		mixerConnections: make(map[unsafe.Pointer]map[int]unsafe.Pointer),
 	}
 
 	// Apply the specified buffer size immediately after creation
@@ -340,11 +350,75 @@ func (e *Engine) ConnectWithFormat(sourcePtr, destPtr unsafe.Pointer, fromBus, t
 		return errors.New(C.GoString(errorStr))
 	}
 
+	// Track connection for smart per-bus control
+	e.trackConnection(sourcePtr, destPtr, toBus)
+
 	return nil
 }
 
+// trackConnection records a source->dest connection for smart per-bus control
+func (e *Engine) trackConnection(sourcePtr, destPtr unsafe.Pointer, toBus int) {
+	if e.mixerConnections == nil {
+		e.mixerConnections = make(map[unsafe.Pointer]map[int]unsafe.Pointer)
+	}
+
+	// Create bus map for this mixer if it doesn't exist
+	if e.mixerConnections[destPtr] == nil {
+		e.mixerConnections[destPtr] = make(map[int]unsafe.Pointer)
+	}
+
+	// Record the connection: mixer[bus] -> source
+	e.mixerConnections[destPtr][toBus] = sourcePtr
+}
+
+// untrackConnection removes a connection record
+func (e *Engine) untrackConnection(destPtr unsafe.Pointer, inputBus int) {
+	if e.mixerConnections == nil {
+		return
+	}
+
+	if busMap, exists := e.mixerConnections[destPtr]; exists {
+		delete(busMap, inputBus)
+
+		// Clean up empty mixer map
+		if len(busMap) == 0 {
+			delete(e.mixerConnections, destPtr)
+		}
+	}
+}
+
+// this is unused!!!
+// getConnectedSources returns sources connected to a mixer as arrays for C interop
+/*func (e *Engine) getConnectedSources(mixerPtr unsafe.Pointer) ([]unsafe.Pointer, int) {
+	if e.mixerConnections == nil {
+		return nil, 0
+	}
+
+	busMap, exists := e.mixerConnections[mixerPtr]
+	if !exists {
+		return nil, 0
+	}
+
+	// Find maximum bus number to size array
+	maxBus := 0
+	for bus := range busMap {
+		if bus > maxBus {
+			maxBus = bus
+		}
+	}
+
+	// Create source array (nil for unconnected buses)
+	sources := make([]unsafe.Pointer, maxBus+1)
+	for bus, source := range busMap {
+		sources[bus] = source
+	}
+
+	return sources, len(sources)
+}*/
+
 // Connect connects two nodes with automatic format handling based on engine's AudioSpec
 // This ensures consistent audio quality across all connections in the engine
+// Now uses the consolidated format system for better efficiency and type safety
 func (e *Engine) Connect(sourcePtr, destPtr unsafe.Pointer, fromBus, toBus int) error {
 	if e == nil || e.ptr == nil {
 		return errors.New("engine is nil")
@@ -354,25 +428,16 @@ func (e *Engine) Connect(sourcePtr, destPtr unsafe.Pointer, fromBus, toBus int) 
 		return errors.New("node pointers cannot be nil")
 	}
 
-	// Create an AVAudioFormat from the engine's AudioSpec for proper format control
-	formatResult := C.audioengine_create_format(
-		C.double(e.spec.SampleRate),
-		C.int(e.spec.ChannelCount),
-		C.int(e.spec.BitDepth),
-	)
-
-	if formatResult.error != nil {
-		// Fall back to nil format if we can't create the AudioSpec-based format
+	// Use the consolidated format system instead of inline C format creation
+	engineFormat, err := e.GetEngineFormat()
+	if err != nil {
+		// Fall back to nil format if we can't create the engine-compatible format
 		return e.ConnectWithFormat(sourcePtr, destPtr, fromBus, toBus, nil)
 	}
+	defer engineFormat.Destroy() // Automatic cleanup with proper lifecycle management
 
-	// Use the AudioSpec-based format for connection
-	err := e.ConnectWithFormat(sourcePtr, destPtr, fromBus, toBus, unsafe.Pointer(formatResult.result))
-
-	// Clean up the format after use
-	C.audioengine_release_format(formatResult.result)
-
-	return err
+	// Use the consolidated format for connection
+	return e.ConnectWithFormat(sourcePtr, destPtr, fromBus, toBus, engineFormat.GetPtr())
 }
 
 // SetMixerPan sets the pan of the main mixer node (-1.0 = hard left, 0.0 = center, 1.0 = hard right)
@@ -403,6 +468,36 @@ func (e *Engine) DisconnectNodeInput(nodePtr unsafe.Pointer, inputBus int) error
 	if errorStr != nil {
 		return errors.New(C.GoString(errorStr))
 	}
+
+	// Remove connection tracking
+	e.untrackConnection(nodePtr, inputBus)
+
+	return nil
+}
+
+// DisconnectNodeOutput disconnects a specific output bus of a node from any connected destination
+// This is useful for breaking outgoing connections when rerouting audio
+func (e *Engine) DisconnectNodeOutput(nodePtr unsafe.Pointer, outputBus int) error {
+	if e == nil || e.ptr == nil {
+		return errors.New("engine is nil")
+	}
+
+	if nodePtr == nil {
+		return errors.New("node pointer is nil")
+	}
+
+	if outputBus < 0 {
+		return errors.New("output bus cannot be negative")
+	}
+
+	errorStr := C.audioengine_disconnect_node_output(e.ptr, nodePtr, C.int(outputBus))
+	if errorStr != nil {
+		return errors.New(C.GoString(errorStr))
+	}
+
+	// Note: Output disconnection is harder to track since we don't know which destination
+	// was disconnected. For now, we'll let the connection tracking be eventually consistent.
+	// TODO: Consider more sophisticated connection tracking for bidirectional cleanup
 
 	return nil
 }

@@ -1,10 +1,30 @@
 # macaudio - macOS Audio/MIDI Library Makefile
 # Root makefile for the complete macaudio library
 
-.PHONY: test test-devices clean help info test-clean test-all test-race test-audible
+.PHONY: test test-devices clean help info test-clean test-all test-race test-audible build-native
 
 # Default target - run comprehensive device tests
 all: test-devices
+
+# Build native library (libmacaudio.dylib) with correct @rpath setting - ENGINE + TAP UNIFIED
+build-native:
+	@echo "🔨 Building native libmacaudio.dylib (engine + tap unified) with @rpath..."
+	clang -shared -fobjc-arc \
+		-framework AVFoundation \
+		-framework AudioToolbox \
+		-framework Foundation \
+		-framework CoreAudio \
+		-install_name @rpath/libmacaudio.dylib \
+		-o libmacaudio.dylib \
+		native/engine.m \
+		native/player.m \
+		native/node.m \
+		native/format.m \
+		native/tap.m
+	@echo "✅ Native library built: libmacaudio.dylib (unified engine + tap)"
+	@echo "📊 Library size: $(shell ls -lh libmacaudio.dylib | awk '{print $$5}')"
+	@echo "🔧 TimePitch buffer scheduling fix included"
+	@echo "🎧 Tap functionality integrated into dylib"
 
 # Test device library (comprehensive test of all device functionality)
 test-devices:
