@@ -97,9 +97,8 @@ func TestPluginInstanceSeparation(t *testing.T) {
 
 	// Set up an input channel with a plugin chain containing both plugins
 	channel := &Channel{
-		BusIndex: 0,
-		Volume:   1.0,
-		Pan:      0.0,
+		Volume: 1.0,
+		Pan:    0.0,
 		InputOptions: &InputOptions{
 			Device:       &inputDevices[0], // Use real device from devices.GetAudio()
 			ChannelIndex: 0,
@@ -120,7 +119,8 @@ func TestPluginInstanceSeparation(t *testing.T) {
 		},
 	}
 
-	engine.Channels[0] = channel
+	// Add channel to engine using append
+	engine.Channels = append(engine.Channels, channel)
 
 	// Serialize the engine
 	jsonData, err := json.MarshalIndent(engine, "", "  ")
@@ -136,50 +136,55 @@ func TestPluginInstanceSeparation(t *testing.T) {
 		t.Fatalf("Failed to deserialize engine: %v", err)
 	}
 
-	// Check the parameter values in the deserialized engine
-	if deserializedEngine.Channels[0] != nil &&
-		deserializedEngine.Channels[0].InputOptions != nil &&
-		deserializedEngine.Channels[0].InputOptions.PluginChain != nil &&
-		len(deserializedEngine.Channels[0].InputOptions.PluginChain.Plugins) == 2 {
+	// Find the first channel with InputOptions and PluginChain
+	var found bool
+	for _, ch := range deserializedEngine.Channels {
+		if ch != nil && ch.InputOptions != nil && ch.InputOptions.PluginChain != nil &&
+			len(ch.InputOptions.PluginChain.Plugins) == 2 {
+			plugin1Deserialized := ch.InputOptions.PluginChain.Plugins[0].Plugin
+			plugin2Deserialized := ch.InputOptions.PluginChain.Plugins[1].Plugin
 
-		// Get the parameter values directly from the plugin Parameters slice
-		plugin1Deserialized := deserializedEngine.Channels[0].InputOptions.PluginChain.Plugins[0].Plugin
-		plugin2Deserialized := deserializedEngine.Channels[0].InputOptions.PluginChain.Plugins[1].Plugin
+			if plugin1Deserialized == nil || plugin2Deserialized == nil {
+				t.Fatalf("Plugins not properly deserialized")
+			}
 
-		if plugin1Deserialized == nil || plugin2Deserialized == nil {
-			t.Fatalf("Plugins not properly deserialized")
+			if len(plugin1Deserialized.Parameters) <= targetParamIndex ||
+				len(plugin2Deserialized.Parameters) <= targetParamIndex {
+				t.Fatalf("Target parameter index %d not found in deserialized plugins", targetParamIndex)
+			}
+
+			param1Val := plugin1Deserialized.Parameters[targetParamIndex].CurrentValue
+			param2Val := plugin2Deserialized.Parameters[targetParamIndex].CurrentValue
+
+			t.Logf("After serialization roundtrip:")
+			t.Logf("  Plugin 1 parameter: %f", param1Val)
+			t.Logf("  Plugin 2 parameter: %f", param2Val)
+
+			if param1Val != param2Val {
+				t.Logf("✅ SUCCESS: Different parameter values preserved through serialization")
+			} else {
+				t.Logf("⚠️  WARNING: Parameter values are identical after serialization")
+			}
+
+			// Verify the modified value is preserved (allow for float precision differences)
+			if math.Abs(float64(param1Val-newValue)) < 0.0001 {
+				t.Logf("✅ Modified parameter value correctly preserved: %f", param1Val)
+			} else {
+				t.Errorf("❌ Modified parameter value lost: expected %f, got %f", newValue, param1Val)
+			}
+
+			// Verify the original value is preserved
+			if math.Abs(float64(param2Val-originalValue)) < 0.0001 {
+				t.Logf("✅ Original parameter value correctly preserved: %f", param2Val)
+			} else {
+				t.Errorf("❌ Original parameter value changed: expected %f, got %f", originalValue, param2Val)
+			}
+
+			found = true
+			break
 		}
-
-		if len(plugin1Deserialized.Parameters) <= targetParamIndex ||
-			len(plugin2Deserialized.Parameters) <= targetParamIndex {
-			t.Fatalf("Target parameter index %d not found in deserialized plugins", targetParamIndex)
-		}
-
-		param1Val := plugin1Deserialized.Parameters[targetParamIndex].CurrentValue
-		param2Val := plugin2Deserialized.Parameters[targetParamIndex].CurrentValue
-
-		t.Logf("After serialization roundtrip:")
-		t.Logf("  Plugin 1 parameter: %f", param1Val)
-		t.Logf("  Plugin 2 parameter: %f", param2Val)
-
-		if param1Val != param2Val {
-			t.Logf("✅ SUCCESS: Different parameter values preserved through serialization")
-		} else {
-			t.Logf("⚠️  WARNING: Parameter values are identical after serialization")
-		}
-
-		// Verify the modified value is preserved (allow for float precision differences)
-		if math.Abs(float64(param1Val-newValue)) < 0.0001 {
-			t.Logf("✅ Modified parameter value correctly preserved: %f", param1Val)
-		} else {
-			t.Errorf("❌ Modified parameter value lost: expected %f, got %f", newValue, param1Val)
-		}
-
-		// Verify the original value is preserved
-		if math.Abs(float64(param2Val-originalValue)) < 0.0001 {
-			t.Logf("✅ Original parameter value correctly preserved: %f", param2Val)
-		} else {
-			t.Errorf("❌ Original parameter value changed: expected %f, got %f", originalValue, param2Val)
-		}
+	}
+	if !found {
+		t.Fatalf("Deserialized engine does not contain expected channel with plugins")
 	}
 }

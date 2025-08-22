@@ -18,9 +18,9 @@ import (
 // Engine represents the main 8-channel mixing engine
 // The engine IS the parameter tree - all state is directly serializable
 type Engine struct {
-	// Fixed array of 8 channels (not slice)
-	Channels     [8]*Channel `json:"channels"`
-	MasterVolume float32     `json:"masterVolume"`
+	// Was Fixed array of 8 channels (now slice)
+	Channels     []*Channel `json:"channels"`
+	MasterVolume float32    `json:"masterVolume"`
 
 	// Engine configuration
 	SampleRate int `json:"sampleRate"`
@@ -30,44 +30,13 @@ type Engine struct {
 	InputDevice  *devices.AudioDevice `json:"inputDevice,omitempty"`
 	OutputDevice *devices.AudioDevice `json:"outputDevice,omitempty"`
 
+	// Bus allocation tracking using native pointers as unique identifiers
+	busAllocation    map[uintptr]int `json:"busAllocation"`    // mixerNodePtr -> busIndex
+	nextAvailableBus int             `json:"nextAvailableBus"` // Next bus to assign
+	maxBuses         int             `json:"maxBuses"`         // Maximum supported buses (usually 8-16)
+
 	// Internal engine state (not serialized)
 	nativeEngine *C.AudioEngine `json:"-"` // Direct C AudioEngine pointer
-}
-
-// Channel represents a unified channel that can be input or playback
-type Channel struct {
-	// Base channel properties
-	BusIndex int     `json:"busIndex"`
-	Volume   float32 `json:"volume"`
-	Pan      float32 `json:"pan"`
-
-	// Optional type-specific data (nil when not applicable)
-	PlaybackOptions *PlaybackOptions `json:"playbackOptions,omitempty"`
-	InputOptions    *InputOptions    `json:"inputOptions,omitempty"`
-}
-
-// IsInput returns true if this is an input channel
-func (c *Channel) IsInput() bool {
-	return c.InputOptions != nil
-}
-
-// IsPlayback returns true if this is a playback channel
-func (c *Channel) IsPlayback() bool {
-	return c.PlaybackOptions != nil
-}
-
-// PlaybackOptions contains playback-specific configuration
-type PlaybackOptions struct {
-	FilePath string  `json:"filePath"`
-	Rate     float32 `json:"rate"`  // 0.25x to 1.25x
-	Pitch    float32 `json:"pitch"` // ±12 semitones
-}
-
-// InputOptions contains input-specific configuration
-type InputOptions struct {
-	Device       *devices.AudioDevice `json:"device"`       // Complete device info with capabilities
-	ChannelIndex int                  `json:"channelIndex"` // Channel index on the device
-	PluginChain  *PluginChain         `json:"pluginChain"`  // Effects chain
 }
 
 // NewEngine creates a new 8-channel mixing engine with specified device and settings
@@ -126,6 +95,11 @@ func NewEngine(outputDevice *devices.AudioDevice, sampleRateIndex int, bufferSiz
 		nativeEngine: nativeEnginePtr,
 	}
 
+	// Initialize bus allocation system
+	engine.busAllocation = make(map[uintptr]int)
+	engine.nextAvailableBus = 0
+	engine.maxBuses = 8 // Default to 8 input buses on main mixer
+
 	return engine, nil
 }
 
@@ -163,15 +137,10 @@ func (e *Engine) Reset() {
 
 // Destroy completely shuts down and cleans up the engine
 func (e *Engine) Destroy() {
+	// Remove all channels
+	e.Channels = nil
 	if e.nativeEngine == nil {
 		return // Already destroyed or never initialized
-	}
-
-	// Clean up all Channels first (disconnect from mixer buses, etc.)
-	for i := range e.Channels {
-		if e.Channels[i] != nil {
-			e.DestroyChannel(i)
-		}
 	}
 
 	// Destroy the native C AudioEngine (handles stop, tap removal, reset, and cleanup)
@@ -182,80 +151,16 @@ func (e *Engine) Destroy() {
 }
 
 // =============================================================================
-// Public API - Channel Management
-// =============================================================================
-
-// CreateInputChannel creates an input channel connected to an audio device
-func (e *Engine) CreateInputChannel(device *devices.AudioDevice, channelIndex int) (*Channel, error) {
-	// Find available channel slot
-	busIndex := e.findAvailableChannelslot()
-	if busIndex == -1 {
-		return nil, errors.New("no available channel slots (maximum 8)")
-	}
-
-	// TODO: Validate channelIndex is within device's channel count
-
-	channel := &Channel{
-		BusIndex: busIndex,
-		Volume:   1.0,
-		Pan:      0.0,
-		InputOptions: &InputOptions{
-			Device:       device,
-			ChannelIndex: channelIndex,
-			PluginChain:  NewPluginChain(),
-		},
-	}
-
-	e.Channels[busIndex] = channel
-	return channel, nil
-}
-
-// CreatePlaybackChannel creates a playback channel for an audio file
-func (e *Engine) CreatePlaybackChannel(filePath string) (*Channel, error) {
-	// Find available channel slot
-	busIndex := e.findAvailableChannelslot()
-	if busIndex == -1 {
-		return nil, errors.New("no available channel slots (maximum 8)")
-	}
-
-	// TODO: Validate file format and size (200MB limit)
-
-	channel := &Channel{
-		BusIndex: busIndex,
-		Volume:   1.0,
-		Pan:      0.0,
-		PlaybackOptions: &PlaybackOptions{
-			FilePath: filePath,
-			Rate:     1.0, // Normal playback rate
-			Pitch:    0.0, // No pitch shift
-		},
-	}
-
-	e.Channels[busIndex] = channel
-	return channel, nil
-} // DestroyChannel removes a channel and frees its bus
-func (e *Engine) DestroyChannel(index int) error {
-	if index < 0 || index >= 8 {
-		return errors.New("invalid channel index (must be 0-7)")
-	}
-
-	if e.Channels[index] == nil {
-		return errors.New("channel slot already empty")
-	}
-
-	// TODO: Disconnect channel from mixer bus
-	// TODO: Clean up channel resources
-
-	e.Channels[index] = nil
-	return nil
-}
-
-// =============================================================================
 // Public API - Master Controls
 // =============================================================================
 
 // SetMasterVolume sets the master output volume (0.0 to 1.0)
 func (e *Engine) SetMasterVolume(volume float32) error {
+	// Validate the volume parameter (strict - no clamping for master volume)
+	if err := ValidateVolume(volume); err != nil {
+		return err
+	}
+
 	// Get the main mixer node first
 	result := C.audioengine_main_mixer_node(e.nativeEngine)
 	if result.error != nil {
@@ -263,7 +168,7 @@ func (e *Engine) SetMasterVolume(volume float32) error {
 		return errors.New(C.GoString(result.error))
 	}
 
-	// Set volume on the main mixer (C function handles all validation)
+	// Set volume on the main mixer (using validated volume)
 	errorStr := C.audioengine_set_mixer_volume(e.nativeEngine, result.result, C.float(volume))
 	if errorStr != nil {
 		e.MasterVolume = 0.0 // Safety: hardware failure = assume dangerous state
@@ -321,15 +226,109 @@ func (e *Engine) DeserializeState(data []byte) error {
 }
 
 // =============================================================================
-// Private Helper Methods
+// Audio Parameter Validation
 // =============================================================================
 
-// findAvailableChannelslot returns the first available channel index, or -1 if full
-func (e *Engine) findAvailableChannelslot() int {
-	for i, channel := range e.Channels {
-		if channel == nil {
-			return i
-		}
+// ValidateVolume validates volume values (0.0 to 1.0)
+func ValidateVolume(volume float32) error {
+	// Check for NaN or infinite values
+	if volume != volume { // NaN check
+		return errors.New("volume cannot be NaN")
 	}
-	return -1 // All slots occupied
+	if volume < -1000000 || volume > 1000000 { // Infinite check
+		return errors.New("volume cannot be infinite")
+	}
+
+	if volume < 0.0 {
+		return errors.New("volume cannot be negative (would cause phase inversion)")
+	}
+
+	if volume > 1.0 {
+		return errors.New("volume cannot exceed 1.0 (would cause clipping)")
+	}
+
+	return nil
 }
+
+// ValidatePan validates pan values (-1.0 to 1.0)
+func ValidatePan(pan float32) error {
+	// Check for NaN or infinite values
+	if pan != pan { // NaN check
+		return errors.New("pan cannot be NaN")
+	}
+	if pan < -1000000 || pan > 1000000 { // Infinite check
+		return errors.New("pan cannot be infinite")
+	}
+
+	if pan < -1.0 {
+		return errors.New("pan cannot be less than -1.0 (full left)")
+	}
+
+	if pan > 1.0 {
+		return errors.New("pan cannot exceed 1.0 (full right)")
+	}
+
+	return nil
+}
+
+// ValidateRate validates playback rate values (0.25x to 1.25x)
+func ValidateRate(rate float32) error {
+	// Check for NaN or infinite values
+	if rate != rate { // NaN check
+		return errors.New("rate cannot be NaN")
+	}
+	if rate < -1000000 || rate > 1000000 { // Infinite check
+		return errors.New("rate cannot be infinite")
+	}
+
+	if rate <= 0.0 {
+		return errors.New("rate must be positive (cannot reverse playback)")
+	}
+
+	if rate < 0.25 {
+		return errors.New("rate cannot be less than 0.25 (too slow)")
+	}
+
+	if rate > 1.25 {
+		return errors.New("rate cannot exceed 1.25 (too fast)")
+	}
+
+	return nil
+}
+
+// ValidatePitch validates pitch shift values (±12 semitones)
+func ValidatePitch(pitch float32) error {
+	// Check for NaN or infinite values
+	if pitch != pitch { // NaN check
+		return errors.New("pitch cannot be NaN")
+	}
+	if pitch < -1000000 || pitch > 1000000 { // Infinite check
+		return errors.New("pitch cannot be infinite")
+	}
+
+	if pitch < -12.0 {
+		return errors.New("pitch cannot be less than -12.0 semitones (one octave down)")
+	}
+
+	if pitch > 12.0 {
+		return errors.New("pitch cannot exceed 12.0 semitones (one octave up)")
+	}
+
+	return nil
+}
+
+// ValidateFilePath validates audio file paths
+func ValidateFilePath(filePath string) error {
+	if filePath == "" {
+		return errors.New("file path cannot be empty")
+	}
+
+	// Check if file exists (basic validation - full validation happens at native layer)
+	// Note: We don't do extensive validation here as audio format support
+	// is determined by the native AudioPlayer implementation
+	return nil
+}
+
+// =============================================================================
+// Private Helper Methods
+// =============================================================================

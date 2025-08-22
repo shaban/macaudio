@@ -3,8 +3,10 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/shaban/macaudio/devices"
 	"github.com/shaban/macaudio/plugins"
@@ -13,7 +15,24 @@ import (
 // TestEngineSerializationRoundtrip tests complete serialization roundtrip with real devices and plugins
 func TestEngineSerializationRoundtrip(t *testing.T) {
 	// Create engine with real device and plugin data
-	originalEngine := createEngineWithRealData(t)
+	audioDevices, err := devices.GetAudio()
+	if err != nil {
+		t.Fatalf("Failed to get audio devices: %v", err)
+	}
+	originalEngine, err := NewEngine(&audioDevices.Outputs()[0], 0, 512)
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+
+	pluginList, err := plugins.List()
+	if err != nil {
+		t.Fatalf("Failed to get plugin: %v", err)
+	}
+	// Set up the engine with the loaded plugins
+	originalEngine.MasterVolume = 0.8 // Set a non-default master volume for testing
+
+	setupChannelWithInputDevice(originalEngine, audioDevices.Inputs(), pluginList, 0.8, 0.0)
+	setupChannelWithPlaybackFile(originalEngine, 0.65, -0.3) // Add a playback channel
 
 	// Serialize to JSON
 	jsonData, err := json.MarshalIndent(originalEngine, "", "  ")
@@ -42,96 +61,60 @@ func TestEngineSerializationRoundtrip(t *testing.T) {
 	compareEngines(t, originalEngine, &deserializedEngine)
 }
 
-// createEngineWithRealData creates an engine populated with real system data
-func createEngineWithRealData(t *testing.T) *Engine {
-	engine := &Engine{
-		MasterVolume: 0.85,
-		SampleRate:   48000,
-	}
-
-	// Get real audio devices
-	audioDevices, err := devices.GetAudio()
-	if err != nil {
-		t.Logf("Warning: Could not get audio devices: %v", err)
-		return engine // Return basic engine if devices unavailable
-	}
-
-	// Get real plugins
-	pluginInfos, err := plugins.List()
-	if err != nil {
-		t.Logf("Warning: Could not get plugins: %v", err)
-		return engine // Return basic engine if plugins unavailable
-	}
-
-	// Set up a few channels with real data
-	setupChannelWithInputDevice(engine, 0, audioDevices.Inputs().Online(), pluginInfos.ByType("aufx"))
-	setupChannelWithPlaybackFile(engine, 1)
-	setupChannelWithInputDevice(engine, 2, audioDevices.Inputs().Online(), pluginInfos.ByType("aumu"))
-	setupChannelWithInputDevice(engine, 3, audioDevices.Inputs().Online(), pluginInfos.ByManufacturer("NDSP"))
-
-	return engine
-}
-
-// setupChannelWithInputDevice sets up an input channel with real device and plugins
-func setupChannelWithInputDevice(engine *Engine, channelIndex int, inputDevices devices.AudioDevices, effectPlugins plugins.PluginInfos) {
-	if len(inputDevices) == 0 {
-		return // Skip if no input devices
-	}
-
+// setupChannelWithInputDevice sets up an input channel with real device and random plugins
+func setupChannelWithInputDevice(engine *Engine, inputDevices devices.AudioDevices, effectPlugins plugins.PluginInfos, volume, pan float32) {
 	// Use first available input device
 	device := inputDevices[0]
 
 	channel := &Channel{
-		BusIndex: channelIndex,
-		Volume:   0.75,
-		Pan:      0.0,
+		Volume: volume,
+		Pan:    pan,
 		InputOptions: &InputOptions{
 			Device:       &device, // Embed complete device info
 			ChannelIndex: 0,
 		},
 	}
 
-	// Add plugin chain if effects available
+	// Add plugin chain with 0-3 random plugins
 	if len(effectPlugins) > 0 {
 		pluginChain := &PluginChain{}
-
-		// Add first available effect plugin
-		if plugin, err := effectPlugins[0].Introspect(); err == nil {
-			enginePlugin := EnginePlugin{
-				IsInstalled: true,
-				Plugin:      plugin, // Complete introspected plugin with parameter schema
-				Bypassed:    false,
-			}
-
-			// Set some realistic current values using the introspected parameter metadata
-			for i := range plugin.Parameters {
-				param := &plugin.Parameters[i] // Get pointer to modify in place
-				if param.IsWritable && i < 5 { // Limit to 5 parameters for testing
-					// Set a reasonable value within the parameter's range
-					if param.CurrentValue == 0 && param.DefaultValue != 0 {
-						param.CurrentValue = param.DefaultValue
-					} else if param.CurrentValue == 0 {
-						// Calculate a reasonable value within the parameter's range
-						param.CurrentValue = param.MinValue + (param.MaxValue-param.MinValue)*0.3
+		// Seed random
+		rand.Seed(time.Now().UnixNano())
+		numPlugins := rand.Intn(4) // 0, 1, 2, or 3
+		indices := rand.Perm(len(effectPlugins))[:numPlugins]
+		for _, idx := range indices {
+			pluginInfo := effectPlugins[idx]
+			if plugin, err := pluginInfo.Introspect(); err == nil {
+				enginePlugin := EnginePlugin{
+					IsInstalled: true,
+					Plugin:      plugin, // Complete introspected plugin with parameter schema
+					Bypassed:    false,
+				}
+				// Set some realistic current values using the introspected parameter metadata
+				for i := range plugin.Parameters {
+					param := &plugin.Parameters[i]
+					if param.IsWritable && i < 5 {
+						if param.CurrentValue == 0 && param.DefaultValue != 0 {
+							param.CurrentValue = param.DefaultValue
+						} else if param.CurrentValue == 0 {
+							param.CurrentValue = param.MinValue + (param.MaxValue-param.MinValue)*0.3
+						}
 					}
 				}
+				pluginChain.Plugins = append(pluginChain.Plugins, enginePlugin)
 			}
-
-			pluginChain.Plugins = append(pluginChain.Plugins, enginePlugin)
 		}
-
 		channel.InputOptions.PluginChain = pluginChain
 	}
 
-	engine.Channels[channelIndex] = channel
+	engine.Channels = append(engine.Channels, channel)
 }
 
 // setupChannelWithPlaybackFile sets up a playback channel (no plugins per MVP)
-func setupChannelWithPlaybackFile(engine *Engine, channelIndex int) {
+func setupChannelWithPlaybackFile(engine *Engine, volume, pan float32) {
 	channel := &Channel{
-		BusIndex: channelIndex,
-		Volume:   0.65,
-		Pan:      -0.3,
+		Volume: volume,
+		Pan:    pan,
 		PlaybackOptions: &PlaybackOptions{
 			FilePath: "/System/Library/Sounds/Ping.aiff", // System sound that should exist
 			Rate:     1.0,
@@ -140,7 +123,7 @@ func setupChannelWithPlaybackFile(engine *Engine, channelIndex int) {
 	}
 
 	// Note: Per MVP, plugin chains are input channels only
-	engine.Channels[channelIndex] = channel
+	engine.Channels = append(engine.Channels, channel)
 }
 
 // compareEngines performs deep comparison between original and deserialized engines
@@ -156,7 +139,12 @@ func compareEngines(t *testing.T, original, deserialized *Engine) {
 	}
 
 	// Compare channels
-	for i := 0; i < 8; i++ {
+	if len(original.Channels) != len(deserialized.Channels) {
+		t.Fatalf("Channel length mismatch: original=%d, deserialized=%d",
+			len(original.Channels), len(deserialized.Channels))
+	}
+
+	for i := range original.Channels {
 		origChannel := original.Channels[i]
 		deserChannel := deserialized.Channels[i]
 
@@ -183,11 +171,6 @@ func compareChannels(t *testing.T, index int, original, deserialized *Channel) {
 	if originalIsInput != deserializedIsInput {
 		t.Errorf("Channel[%d] type mismatch: original is input=%t, deserialized is input=%t",
 			index, originalIsInput, deserializedIsInput)
-	}
-
-	if original.BusIndex != deserialized.BusIndex {
-		t.Errorf("Channel[%d] BusIndex mismatch: original=%d, deserialized=%d",
-			index, original.BusIndex, deserialized.BusIndex)
 	}
 
 	if original.Volume != deserialized.Volume {
