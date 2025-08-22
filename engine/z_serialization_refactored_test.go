@@ -71,13 +71,13 @@ func TestBasicSerializationRoundtrip(t *testing.T) {
 			}
 
 			// Validate deserialized engine state
-			validateDeserializedEngine(t, originalEngine, &deserializedEngine, tt.config)
+			validateDeserializedEngine(t, originalEngine, &deserializedEngine)
 		})
 	}
 }
 
 // validateDeserializedEngine compares original and deserialized engines
-func validateDeserializedEngine(t *testing.T, original, deserialized *Engine, config SerializationTestConfig) {
+func validateDeserializedEngine(t *testing.T, original, deserialized *Engine) {
 	// Validate basic engine properties
 	if deserialized.MasterVolume != original.MasterVolume {
 		t.Errorf("MasterVolume mismatch: expected %v, got %v", original.MasterVolume, deserialized.MasterVolume)

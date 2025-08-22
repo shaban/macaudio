@@ -78,10 +78,10 @@ func setupChannelWithInputDevice(engine *Engine, inputDevices devices.AudioDevic
 	// Add plugin chain with 0-3 random plugins
 	if len(effectPlugins) > 0 {
 		pluginChain := &PluginChain{}
-		// Seed random
-		rand.Seed(time.Now().UnixNano())
-		numPlugins := rand.Intn(4) // 0, 1, 2, or 3
-		indices := rand.Perm(len(effectPlugins))[:numPlugins]
+		// Create random source with current time
+		rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+		numPlugins := rng.Intn(4) // 0, 1, 2, or 3
+		indices := rng.Perm(len(effectPlugins))[:numPlugins]
 		for _, idx := range indices {
 			pluginInfo := effectPlugins[idx]
 			if plugin, err := pluginInfo.Introspect(); err == nil {
