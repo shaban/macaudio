@@ -12,7 +12,7 @@ func TestPlaybackChannelFileLoading(t *testing.T) {
 	defer cleanup()
 
 	// Use the existing test audio file
-	testAudioPath, err := filepath.Abs("../avaudio/engine/idea.m4a")
+	testAudioPath, err := filepath.Abs("idea.m4a")
 	if err != nil {
 		t.Fatalf("Failed to get absolute path to test audio file: %v", err)
 	}

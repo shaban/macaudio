@@ -31,9 +31,9 @@ type Engine struct {
 	OutputDevice *devices.AudioDevice `json:"outputDevice,omitempty"`
 
 	// Bus allocation tracking using native pointers as unique identifiers
-	busAllocation    map[uintptr]int `json:"busAllocation"`    // mixerNodePtr -> busIndex
-	nextAvailableBus int             `json:"nextAvailableBus"` // Next bus to assign
-	maxBuses         int             `json:"maxBuses"`         // Maximum supported buses (usually 8-16)
+	busAllocation    map[uintptr]int // mixerNodePtr -> busIndex
+	nextAvailableBus int             // Next bus to assign
+	maxBuses         int             // Maximum supported buses (usually 8-16)
 
 	// Internal engine state (not serialized)
 	nativeEngine *C.AudioEngine `json:"-"` // Direct C AudioEngine pointer
