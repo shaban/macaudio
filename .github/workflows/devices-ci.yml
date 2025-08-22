@@ -25,6 +25,9 @@ jobs:
       - name: Go env
         run: go env
 
+      - name: Build native library
+        run: make build-native
+
       - name: Vet (all)
         run: go vet ./...
 
