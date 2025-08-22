@@ -1,20 +1,94 @@
-# macaudio - macOS Audio/MIDI Device & AudioUnit Plugin Library
+# macaudio - macOS Professional Audio Engine
 
-A silent, Go library for enumerating macOS Core Audio and Core MIDI devices, and introspecting AudioUnit plugins with configurable JSON logging.
+A comprehensive Go library for professional audio applications on macOS. Features a multi-channel audio engine with parameter validation, device enumeration, and AudioUnit plugin introspection.
 
 ## Features
 
+- **Professional Audio Engine**: 8-channel mixing engine with comprehensive parameter validation and bus allocation
+- **Multi-Channel Architecture**: AudioPlayer → TimePitch → ChannelMixer → MainMixer with automatic bus management
+- **Strict Parameter Validation**: Professional-grade validation for volume, pan, rate, pitch, and file paths (no clamping)
 - **Complete Audio Device Enumeration**: Get all audio devices with input/output capabilities, sample rates, bit depths, device types, and transport types
 - **Advanced MIDI Device Hierarchy**: Full 3-level MIDI enumeration (devices → entities → endpoints) with manufacturer details, display names, and SysEx capabilities
 - **AudioUnit Plugin Introspection**: Enumerate and introspect AudioUnit plugins with full parameter metadata and filtering capabilities
+- **Session with Fast Startup & Caching**: High-level session API with quick plugin index, lazy details cache, refresh & warm-up helpers, and configurable timeouts
 - **Method-Based Plugin API**: Modern Go API with both synchronous method-based and function-based introspection
 - **Silent Library Design**: No unwanted logging output by default - perfect for production use
 - **Configurable JSON Logging**: Enable detailed JSON logging for debugging and development
-- **Unified Structure**: Audio devices, MIDI devices, and plugins all follow consistent error handling patterns
+- **Unified Structure**: Audio devices, MIDI devices, plugins, and engine all follow consistent error handling patterns
 - **Rich Filtering Methods**: Built-in filters for device capabilities, plugin types, and status
 
 ## Quick Start
 
+### Audio Engine
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    
+    "github.com/shaban/macaudio/engine"
+    "github.com/shaban/macaudio/devices"
+)
+
+func main() {
+    // Get available audio devices
+    audioDevices, err := devices.GetAudio()
+    if err != nil {
+        log.Fatal(err)
+    }
+    
+    // Find an output device
+    outputDevices := audioDevices.Outputs()
+    if len(outputDevices) == 0 {
+        log.Fatal("No output devices found")
+    }
+    
+    // Create audio engine
+    engine, err := engine.NewEngine(outputDevices[0], 0, 512) // First sample rate, 512 buffer
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer engine.Destroy()
+    
+    // Set master volume (with validation)
+    if err := engine.SetMasterVolume(0.8); err != nil {
+        log.Fatal(err) // Will error if volume > 1.0 or < 0.0
+    }
+    
+    // Start the engine
+    if err := engine.Start(); err != nil {
+        log.Fatal(err)
+    }
+    
+    fmt.Printf("Audio engine running: %v\n", engine.IsRunning())
+    fmt.Printf("Master volume: %.2f\n", engine.GetMasterVolume())
+    
+    // Engine automatically handles bus allocation for multi-channel audio
+}
+```
+
+### Parameter Validation
+```go
+import "github.com/shaban/macaudio/engine"
+
+// All audio parameters use strict validation (no clamping)
+if err := engine.ValidateVolume(1.5); err != nil {
+    fmt.Println(err) // "volume cannot exceed 1.0 (would cause clipping)"
+}
+
+if err := engine.ValidatePan(-2.0); err != nil {
+    fmt.Println(err) // "pan cannot be less than -1.0 (full left)"
+}
+
+if err := engine.ValidateRate(2.0); err != nil {
+    fmt.Println(err) // "rate cannot exceed 1.25 (too fast)"
+}
+
+if err := engine.ValidatePitch(15.0); err != nil {
+    fmt.Println(err) // "pitch cannot exceed 12.0 semitones (one octave up)"
+}
+```
 ### Device Discovery
 ```go
 package main
@@ -68,27 +142,75 @@ import (
 )
 
 func main() {
-    // Get all AudioUnit plugins
-    auPlugins, err := plugins.GetAU()
-    if err != nil {
-        log.Fatal(err)
-    }
+    // Quick scan of AudioUnit plugins (no instantiation)
+    infos, err := plugins.List()
+    if err != nil { log.Fatal(err) }
+    fmt.Printf("Found %d AudioUnit plugins\n", len(infos))
     
-    fmt.Printf("Found %d AudioUnit plugins\n", len(auPlugins))
-    
-    // Filter for instruments only
-    instruments := auPlugins.Instruments()
+    // Filter for instruments only (type aumu)
+    instruments := infos.ByType("aumu")
     fmt.Printf("Instruments: %d\n", len(instruments))
     
-    // Get parameter details for the first plugin
-    if len(auPlugins) > 0 {
-        params, err := auPlugins[0].GetParameters()
+    // Introspect a single plugin to get parameters
+    if len(instruments) > 0 {
+        plug, err := instruments[0].Introspect()
         if err == nil {
-            fmt.Printf("Plugin '%s' has %d parameters\n", 
-                auPlugins[0].Name, len(params))
+            fmt.Printf("Plugin '%s' has %d parameters\n", plug.Name, len(plug.Parameters))
         }
     }
 }
+```
+
+### Session (fast monitoring + plugin cache)
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "github.com/shaban/macaudio/session"
+    "github.com/shaban/macaudio/plugins"
+)
+
+func main() {
+    // Create a session with defaults
+    sess, err := session.NewSessionWithDefaults()
+    if err != nil { log.Fatal(err) }
+    defer sess.Close()
+
+    // Quick plugin index (fast, no instantiation)
+    infos, err := sess.QuickPlugins()
+    if err != nil { log.Fatal(err) }
+    fmt.Printf("Quick index: %d plugins\n", len(infos))
+
+    // Fetch full details for a single plugin on demand
+    if len(infos) > 0 {
+        p := infos[0]
+        full, err := sess.Plugin(p.Type, p.Subtype, p.ManufacturerID, p.Name)
+        if err == nil {
+            fmt.Printf("%s has %d params\n", full.Name, len(full.Parameters))
+        }
+    }
+
+    // Refresh quick index to reconcile changes
+    diff, _ := sess.RefreshQuick()
+    fmt.Printf("Added=%d Removed=%d Changed=%d\n", len(diff.Added), len(diff.Removed), len(diff.Changed))
+
+    // Optional: warm a subset (e.g., instruments) with limited concurrency
+    _ = sess.Warm(func(pi plugins.PluginInfo) bool { return pi.Type == "aumu" }, 4)
+}
+```
+
+Use `NewSessionWithOptions` for advanced control:
+```go
+opt := session.Options{
+    RefreshQuickOnStart: true,
+    WarmSelector: func(pi plugins.PluginInfo) bool { return pi.Name == "My Favorite Synth" },
+    WarmConcurrency: 4,
+    // Override timeouts (seconds); keep small for dev, larger for production
+    TotalIntrospectTimeout: 2.0,
+}
+sess, _ := session.NewSessionWithOptions(session.DefaultAudioSpec, opt)
 ```
 
 ## Installation
@@ -162,55 +284,28 @@ outputDevices := midiDevices.Outputs()
 ```go
 import "github.com/shaban/macaudio/plugins"
 
-// Get all AudioUnit plugins with quick scan
-pluginInfos, err := plugins.List()
-if err != nil {
-    log.Fatal(err)
-}
-
-fmt.Printf("Found %d AudioUnit plugins\n", len(pluginInfos))
+// Quick scan
+infos, _ := plugins.List()
 
 // Filter examples
-effectPlugins := pluginInfos.ByType("aufx")              // Effects
-instrumentPlugins := pluginInfos.ByType("aumu")          // Instruments
-applePlugins := pluginInfos.ByManufacturer("appl")       // Apple plugins
-compressorPlugins := pluginInfos.ByName("compressor")    // Name search
+effects := infos.ByType("aufx")                     // Effects
+instruments := infos.ByType("aumu")                 // Instruments
+apple := infos.ByManufacturer("appl")               // Apple
+compressors := infos.ByName("compressor")           // Name contains
 
-// Method-based introspection (recommended)
-for _, info := range effectPlugins[:3] { // First 3 effects
-    plugin, err := info.Introspect()
-    if err != nil {
-        continue
-    }
-    
-    fmt.Printf("Plugin: %s\n", plugin.Name)
-    fmt.Printf("  Type: %s (%s)\n", plugin.Type, plugin.Category)
-    fmt.Printf("  Manufacturer: %s\n", plugin.ManufacturerID)
-    fmt.Printf("  Parameters: %d\n", len(plugin.Parameters))
-    
-    // Parameter details
-    for _, param := range plugin.Parameters[:min(3, len(plugin.Parameters))] {
-        fmt.Printf("    %s: %.2f (%.2f-%.2f) %s\n", 
-            param.DisplayName, param.CurrentValue, 
-            param.MinValue, param.MaxValue, param.Unit)
-    }
-}
+// Single introspection by triplet (type, subtype, manufacturerID)
+plug, err := plugins.Introspect("aufx", "dely", "appl")
 
-// Batch introspection for multiple plugins
-instrumentPlugins = instrumentPlugins[:2] // Limit for example
-instruments, err := instrumentPlugins.Introspect()
-if err != nil {
-    log.Fatal(err)
-}
+// Single introspection by PluginInfo (includes Name for exact match)
+plug, err := effects[0].Introspect()
 
-fmt.Printf("Introspected %d instruments with full parameter data\n", len(instruments))
+// Batch introspection
+introspected, err := instruments[:2].Introspect()
 ```
 
 ## Plugin Introspection API
 
-The plugins package provides both method-based and function-based APIs:
-
-### Method-Based API (Recommended)
+The plugins package exposes a method-based API:
 
 ```go
 // Single plugin introspection
@@ -228,20 +323,20 @@ if err != nil {
 }
 ```
 
-### Function-Based API
+### Suites vs Singles
+
+- A **suite** is defined by the triplet (type, subtype, manufacturerID). Use the standalone function:
 
 ```go
-// Introspect by plugin identifiers
-plugins, err := plugins.Introspect("aufx", "dcmp", "appl") // Apple Compressor
-if err != nil {
-    log.Fatal(err)
-}
+// Introspect all plugins matching the triplet (returns first match)
+plugin, err := plugins.Introspect("aufx", "dely", "appl")
+```
 
-// Get all plugins (empty parameters = all)
-allPlugins, err := plugins.Introspect("", "", "")
-if err != nil {
-    log.Fatal(err)
-}
+- A **single plugin** is defined by the quadruplet (type, subtype, manufacturerID, name). Use the method:
+
+```go
+// Introspect exact plugin by PluginInfo (includes Name)
+plugin, err := pluginInfo.Introspect()
 ```
 
 ## Plugin Filtering and Analysis
@@ -261,7 +356,7 @@ delayPlugins := pluginInfos.ByName("delay")                    // Name contains 
 effectCategory := pluginInfos.ByCategory("Effect")             // Effect category
 
 // Full plugin filtering (after introspection)
-allPlugins, _ := plugins.Introspect("", "", "")
+allPlugins, _ := infos.Introspect()
 
 pluginsWithParams := allPlugins.WithParameters()                // Has parameters
 indexedPlugins := allPlugins.WithIndexedParameters()            // Has dropdown/list params
@@ -351,17 +446,33 @@ Enable detailed JSON logging for debugging plugin introspection:
 ```go
 import "github.com/shaban/macaudio/plugins"
 
-// Enable JSON logging
+// Enable JSON logging and redirect to file (for analysis)
+f, _ := os.Create("plugins_full_scan.jsonl")
+defer f.Close()
+plugins.SetJSONLogWriter(f)
 plugins.SetJSONLogging(true)
 
-pluginInfos, _ := plugins.List()
-// Outputs: 🔍 Plugin List JSON: {"success":true,"plugins":[...],"pluginCount":152}
-
-plugin, _ := pluginInfos[0].Introspect()
-// Outputs: 🔍 IntrospectWithTimeout JSON: {"success":true,"plugins":[...],"pluginCount":1}
+infos, _ := plugins.List()           // Emits: QuickScan: {...}
+_ , _ = infos.Introspect()           // Emits per plugin: Introspect[TYPE:SUBTYPE:MANUFACTURER:NAME]: {...}
 
 // Disable for production
 plugins.SetJSONLogging(false)
+```
+
+### Session Metrics Hook (optional)
+Inject a simple hook to observe durations, cache hits, and warm progress:
+```go
+type myHook struct{}
+func (myHook) OnQuickScanStart() {}
+func (myHook) OnQuickScanDone(d time.Duration, count int, scanned bool) {}
+func (myHook) OnDetailsFetchStart(key string) {}
+func (myHook) OnDetailsFetchDone(key string, d time.Duration, ok bool) {}
+func (myHook) OnCacheHit(key string) {}
+func (myHook) OnCacheMiss(key string) {}
+func (myHook) OnRefreshQuickDiff(a, r, c int, d time.Duration) {}
+func (myHook) OnWarmProgress(total, completed int) {}
+
+sess.SetMetricsHook(myHook{})
 ```
 
 ## Device Compatibility
@@ -538,22 +649,26 @@ online := midiDevices.Online()                   // Online devices
 
 ## JSON Logging
 
-Enable detailed JSON logging for debugging:
+Enable detailed JSON logging for devices (with optional file redirection):
 
 ```go
-import "macaudio/devices"
+import (
+    "os"
+    "github.com/shaban/macaudio/devices"
+)
 
-// Enable JSON logging to see raw device data
-devices.SetJSONLogging(true)
+f, _ := os.Create("devices_scan.jsonl")
+defer f.Close()
+devices.SetJSONLogWriter(f)    // optional: redirect to file
+devices.SetJSONLogging(true)   // enable logging
 
 audioDevices, _ := devices.GetAudio()
-// Outputs: 🔍 Audio Devices JSON: {"success":true,"devices":[...],"deviceCount":5}
+// Emits: AudioDevices: {"success":true,"devices":[...],"deviceCount":5}
 
 midiDevices, _ := devices.GetMIDI()  
-// Outputs: 🔍 MIDI Devices JSON: {"success":true,"devices":[...],"deviceCount":8}
+// Emits: MIDIDevices: {"success":true,"devices":[...],"deviceCount":8}
 
-// Disable for production
-devices.SetJSONLogging(false)
+devices.SetJSONLogging(false)  // disable for production
 ```
 
 ## Testing
@@ -605,6 +720,14 @@ macaudio/                          # Root package
 ├── README.md                      # This file
 ├── go.mod                         # Module: github.com/shaban/macaudio
 ├── Makefile                       # Build and test commands
+├── engine/                        # Professional audio engine package
+│   ├── engine.go                  # Main audio engine API with validation
+│   ├── channel.go                 # Channel management and routing
+│   ├── input_channel.go           # Audio input channel implementation
+│   ├── playback_channel.go        # Audio playback channel implementation
+│   ├── plugins.go                 # AudioUnit plugin integration
+│   ├── z_*_test.go                # Comprehensive test suite
+│   └── idea.m4a                   # Test audio file
 ├── devices/                       # Device enumeration package
 │   ├── devices.go                 # Main API
 │   ├── devices_test.go            # Audio device tests
@@ -612,21 +735,46 @@ macaudio/                          # Root package
 │   ├── unified_test.go            # Combined tests
 │   └── native/
 │       └── devices.m              # Core Audio/MIDI implementation
-└── plugins/                       # AudioUnit plugin package
-    ├── plugins.go                 # Main API
-    ├── plugins_test.go            # Plugin enumeration tests
-    ├── method_test.go             # Method-based API tests
-    └── native/
-        └── plugins.m              # AudioUnit introspection implementation
+├── session/                       # High-level session (monitoring + cache)
+│   ├── session.go                 # Main API (QuickPlugins, Plugin, RefreshQuick, Warm)
+│   ├── cache_store.go             # Index/details storage helpers
+│   ├── metrics.go                 # Optional metrics hook interface
+│   └── session_test.go            # Session tests (cache lifecycle, reconciliation)
+├── plugins/                       # AudioUnit plugin package
+│   ├── plugins.go                 # Main API
+│   ├── plugins_test.go            # Plugin enumeration tests
+│   ├── method_test.go             # Method-based API tests
+│   └── native/
+│       └── plugins.m              # AudioUnit introspection implementation
+└── native/                        # Shared C/Objective-C implementations
+    ├── macaudio.h                 # Header file
+    ├── engine.m                   # Audio engine implementation
+    ├── format.m                   # Audio format handling
+    ├── node.m                     # Audio node management
+    ├── player.m                   # Audio player implementation
+    └── tap.m                      # Audio tap functionality
 ```
 
 ## Architecture
 
-This library implements a **silent library design pattern**:
+This library implements a **professional audio engine** with three main layers:
 
-- **Objective-C Layer**: Silent Core Audio/MIDI enumeration functions that return structured JSON
-- **Go Layer**: Configurable JSON logging and rich device structures with filtering methods
-- **Error Handling**: Consistent success/error JSON responses with proper Go error propagation
+### Audio Engine Layer
+- **Multi-Channel Engine**: 8-channel mixing with automatic bus allocation using native pointers as unique identifiers
+- **Parameter Validation**: Strict validation for all audio parameters (volume, pan, rate, pitch) with no clamping
+- **Channel Architecture**: AudioPlayer → TimePitch → ChannelMixer → MainMixer signal flow
+- **State Serialization**: Complete engine state can be serialized/deserialized as JSON
+
+### Device & Plugin Layer  
+- **Objective-C Implementation**: Silent Core Audio/MIDI enumeration and AudioUnit introspection
+- **Go API Layer**: Configurable JSON logging and rich structures with filtering methods
+- **Session Management**: Fast plugin index with lazy details cache and reconciliation
+
+### Design Principles
+- **Silent Library Design**: No unwanted logging output by default - perfect for production use
+- **Professional Validation**: Audio parameters reject invalid values instead of clamping (prevents audio artifacts)
+- **Error Handling**: Consistent success/error patterns with proper Go error propagation
+- **Resource Management**: Proper cleanup and memory management for long-running audio applications
 
 ## Device Hierarchy
 

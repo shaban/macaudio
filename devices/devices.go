@@ -11,20 +11,39 @@ package devices
 // Function declarations
 char* getAudioDevices(void);
 char* getMIDIDevices(void);
+int countAudioDevices(void);
+int countMIDIDevices(void);
 */
 import "C"
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"unsafe"
 )
 
 // JSON logging control
 var enableJSONLogging bool = false
+var jsonLogWriter io.Writer
 
 // SetJSONLogging enables or disables JSON logging for debugging
 func SetJSONLogging(enable bool) {
 	enableJSONLogging = enable
+}
+
+// SetJSONLogWriter sets a destination for JSON logs when JSON logging is enabled.
+// If nil, logs will go to stdout.
+func SetJSONLogWriter(w io.Writer) { jsonLogWriter = w }
+
+func logJSON(label, payload string) {
+	if !enableJSONLogging {
+		return
+	}
+	if jsonLogWriter != nil {
+		fmt.Fprintf(jsonLogWriter, "%s: %s\n", label, payload)
+		return
+	}
+	fmt.Printf("%s: %s\n", label, payload)
 }
 
 // Device represents the common properties of any device
@@ -173,6 +192,16 @@ func (devices AudioDevices) ByType(deviceType string) AudioDevices {
 	return filteredDevices
 }
 
+// ByUID returns the audio device with the specified UID
+func (devices AudioDevices) ByUID(uid string) *AudioDevice {
+	for i, device := range devices {
+		if device.UID == uid {
+			return &devices[i]
+		}
+	}
+	return nil
+}
+
 // MIDIDevice represents a MIDI device with input/output capabilities
 type MIDIDevice struct {
 	Device                  // Embedded base device
@@ -302,13 +331,24 @@ func (devices MIDIDevices) ByModel(model string) MIDIDevices {
 	return filteredDevices
 }
 
+// ByUID returns the MIDI device with the specified UID
+func (devices MIDIDevices) ByUID(uid string) *MIDIDevice {
+	for i, device := range devices {
+		if device.UID == uid {
+			return &devices[i]
+		}
+	}
+	return nil
+}
+
 // MIDIDeviceResult represents the result for MIDI devices
 type MIDIDeviceResult struct {
-	Success     bool         `json:"success"`
-	Error       string       `json:"error,omitempty"`
-	ErrorCode   int          `json:"errorCode,omitempty"`
-	Devices     []MIDIDevice `json:"devices"`
-	DeviceCount int          `json:"deviceCount"`
+	Success             bool         `json:"success"`
+	Error               string       `json:"error,omitempty"`
+	ErrorCode           int          `json:"errorCode,omitempty"`
+	Devices             []MIDIDevice `json:"devices"`
+	DeviceCount         int          `json:"deviceCount"`
+	TotalDevicesScanned int          `json:"totalDevicesScanned,omitempty"`
 }
 
 // AudioDeviceResult represents the result for audio devices
@@ -329,9 +369,7 @@ func GetAudio() (AudioDevices, error) {
 	jsonStr := C.GoString(result)
 
 	// JSON logging when enabled
-	if enableJSONLogging {
-		fmt.Printf("🔍 Audio Devices JSON: %s\n", jsonStr)
-	}
+	logJSON("AudioDevices", jsonStr)
 
 	var deviceResult AudioDeviceResult
 	if err := json.Unmarshal([]byte(jsonStr), &deviceResult); err != nil {
@@ -353,54 +391,54 @@ func GetMIDI() (MIDIDevices, error) {
 	jsonData := C.GoString(cDeviceList)
 
 	// JSON logging when enabled
-	if enableJSONLogging {
-		fmt.Printf("🔍 MIDI Devices JSON: %s\n", jsonData)
-	}
+	logJSON("MIDIDevices", jsonData)
 
-	// Parse JSON response to check for success/error structure like audio devices
-	var response map[string]interface{}
-	if err := json.Unmarshal([]byte(jsonData), &response); err != nil {
+	// Parse JSON response consistently with audio devices
+	var deviceResult MIDIDeviceResult
+	if err := json.Unmarshal([]byte(jsonData), &deviceResult); err != nil {
 		return nil, fmt.Errorf("failed to parse MIDI response: %v", err)
 	}
-
-	// Check if it's an error response
-	if success, exists := response["success"]; exists {
-		if successBool, ok := success.(bool); ok && !successBool {
-			errorMsg := "Unknown MIDI error"
-			if errorVal, exists := response["error"]; exists {
-				if errorStr, ok := errorVal.(string); ok {
-					errorMsg = errorStr
-				}
-			}
-			return nil, fmt.Errorf("MIDI enumeration failed: %s", errorMsg)
+	if !deviceResult.Success {
+		if deviceResult.Error == "" {
+			deviceResult.Error = "unknown error"
 		}
+		return nil, fmt.Errorf("MIDI enumeration failed (%d): %s", deviceResult.ErrorCode, deviceResult.Error)
+	}
+	return MIDIDevices(deviceResult.Devices), nil
+}
 
-		// It's a success response, extract devices array
-		if devicesVal, exists := response["devices"]; exists {
-			if devicesArray, ok := devicesVal.([]interface{}); ok {
-				// Convert back to JSON for parsing into MIDIDevice structs
-				devicesJSON, err := json.Marshal(devicesArray)
-				if err != nil {
-					return nil, fmt.Errorf("failed to re-marshal MIDI devices: %v", err)
-				}
+// GetAudioDeviceCount returns the number of audio devices without full enumeration
+// This is much faster than GetAudio() when you only need the count for change detection
+func GetAudioDeviceCount() (int, error) {
+	count := int(C.countAudioDevices())
+	if count < 0 {
+		return 0, fmt.Errorf("failed to get audio device count")
+	}
+	return count, nil
+}
 
-				var devices []MIDIDevice
-				if err := json.Unmarshal(devicesJSON, &devices); err != nil {
-					return nil, fmt.Errorf("failed to parse MIDI devices: %v", err)
-				}
+// GetMIDIDeviceCount returns the number of MIDI devices without full enumeration
+// This is much faster than GetMIDI() when you only need the count for change detection
+func GetMIDIDeviceCount() (int, error) {
+	count := int(C.countMIDIDevices())
+	if count < 0 {
+		return 0, fmt.Errorf("failed to get MIDI device count")
+	}
+	return count, nil
+}
 
-				return devices, nil
-			}
-		}
-
-		return nil, fmt.Errorf("invalid MIDI response structure")
+// GetDeviceCounts returns both audio and MIDI device counts in a single call
+// Useful for hotplug detection when you need to check both device types quickly
+func GetDeviceCounts() (audioCount, midiCount int, err error) {
+	audioCount = int(C.countAudioDevices())
+	if audioCount < 0 {
+		return 0, 0, fmt.Errorf("failed to get audio device count")
 	}
 
-	// Fallback: try to parse as direct array (for backward compatibility)
-	var devices []MIDIDevice
-	if err := json.Unmarshal([]byte(jsonData), &devices); err != nil {
-		return nil, fmt.Errorf("failed to parse MIDI devices: %v", err)
+	midiCount = int(C.countMIDIDevices())
+	if midiCount < 0 {
+		return 0, 0, fmt.Errorf("failed to get MIDI device count")
 	}
 
-	return MIDIDevices(devices), nil
+	return audioCount, midiCount, nil
 }

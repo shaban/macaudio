@@ -14,6 +14,15 @@ void SetVerboseLogging(int enabled) {
     g_verboseLogging = enabled;
 }
 
+// Setter functions for timeouts (controlled from Go)
+void SetPresetLoadingTimeout(double seconds) { g_preset_loading_timeout = seconds; }
+void SetProcessUpdateTimeout(double seconds) { g_process_update_timeout = seconds; }
+void SetTotalTimeout(double seconds) { g_total_timeout = seconds; }
+// Millisecond convenience wrappers to avoid C.double casts in some cgo setups
+void SetPresetLoadingTimeoutMillis(long long ms) { g_preset_loading_timeout = ((double)ms) / 1000.0; }
+void SetProcessUpdateTimeoutMillis(long long ms) { g_process_update_timeout = ((double)ms) / 1000.0; }
+void SetTotalTimeoutMillis(long long ms) { g_total_timeout = ((double)ms) / 1000.0; }
+
 // Conditional logging macros
 #define VERBOSE_LOG(...) do { if (g_verboseLogging) fprintf(stderr, __VA_ARGS__); } while(0)
 #define PROGRESS_LOG(...) fprintf(stderr, __VA_ARGS__)  // Always show progress
@@ -384,11 +393,59 @@ NSString* StringFromAudioUnitParameterUnit(AudioUnitParameterUnit unit) {
 
 @end
 
+/**
+ * IntrospectAudioUnits
+ *
+ * Omnipotent Audio Unit introspection entry point (called from Go via cgo).
+ *
+ * Arguments:
+ *  - type: 4-char code as C string (e.g., "aufx", "aumu"). NULL => any.
+ *  - subtype: 4-char code as C string. NULL => any.
+ *  - manufacturerID: 4-char code as C string (e.g., "appl"). NULL => any.
+ *  - name: Canonical AudioComponent name (UTF-8). If NULL or empty, runs in
+ *          suite mode and returns all plugins that match the triplet
+ *          (type, subtype, manufacturerID). If non-empty, runs in single mode
+ *          and returns only the plugin whose AudioComponentCopyName exactly
+ *          matches the provided name. If no such plugin exists, returns a JSON
+ *          error with errorCode = -3.
+ *
+ * Behavior:
+ *  - Enumerates AudioComponents via AudioComponentFindNext using the triplet.
+ *  - Early name filter (single mode) avoids heavy instantiation when names
+ *    don't match.
+ *  - Each matching component is instantiated out-of-process and inspected for
+ *    parameters, using a dispatch group for concurrency.
+ *  - A global timeout (g_total_timeout seconds) bounds the wait; on timeout
+ *    partial results are returned with timedOut = true.
+ *
+ * Returns:
+ *  - success envelope (pretty-printed):
+ *      {
+ *        "success": true,
+ *        "plugins": [ { name, manufacturerID, type, subtype, parameters: [...] }, ...],
+ *        "pluginCount": <int>,
+ *        "totalPluginsScanned": <int>,
+ *        "timedOut": <bool>
+ *      }
+ *  - on error (e.g., not found in single mode, JSON serialization failure):
+ *      {
+ *        "success": false,
+ *        "error": <string>,
+ *        "errorCode": <int>,
+ *        "plugins": []
+ *      }
+ *
+ * Ownership:
+ *  - The caller owns the returned heap-allocated C string and must free() it.
+ */
 char *IntrospectAudioUnits(const char *type,
                            const char *subtype,
-                           const char *manufacturerID) {
+                           const char *manufacturerID,
+                           const char *name) {
     @autoreleasepool {
         // Silent operation by default (follows devices package pattern)
+        // Optional canonical name filter (nil/empty => suite mode)
+        NSString *requiredName = (name && name[0] != '\0') ? [NSString stringWithUTF8String:name] : nil;
 
         OSType componentType = type ? FourCharCodeFromString([NSString stringWithUTF8String:type]) : 0;
                 OSType componentSubType = subtype ? FourCharCodeFromString([NSString stringWithUTF8String:subtype]) : 0;
@@ -415,8 +472,7 @@ char *IntrospectAudioUnits(const char *type,
             currentComponent = AudioComponentFindNext(currentComponent, &searchDescription);
 
             if (currentComponent != NULL) {
-                dispatch_group_enter(group);
-
+                // Copy canonical AU name first so we can early-filter by name
                 CFStringRef nameCFString = NULL;
                 AudioComponentCopyName(currentComponent, &nameCFString);
 
@@ -424,6 +480,16 @@ char *IntrospectAudioUnits(const char *type,
                 AudioComponentGetDescription(currentComponent, &componentDesc);
 
                 NSString *auName = (nameCFString != NULL) ? (__bridge NSString *)nameCFString : @"[Unknown Name]";
+
+                // If single-plugin mode with a required name, skip non-matching components early
+                if (requiredName && ![auName isEqualToString:requiredName]) {
+                    if (nameCFString != NULL) {
+                        CFRelease(nameCFString);
+                    }
+                    continue;
+                }
+
+                dispatch_group_enter(group);
 
                 count++;
                 VERBOSE_LOG("Found Audio Unit [%d]: %s\n", count, [auName UTF8String]);
@@ -524,6 +590,19 @@ char *IntrospectAudioUnits(const char *type,
         }
 
         NSUInteger usablePlugins = allAudioUnitsData.count;
+
+        // If a specific name was requested and nothing matched, return an error JSON
+        if (requiredName && usablePlugins == 0) {
+            NSDictionary *errorResult = @{
+                @"success": @NO,
+                @"error": @"plugin not found for given type:subtype:manufacturerID:name",
+                @"errorCode": @(-3),
+                @"plugins": @[]
+            };
+            NSData *jsonData = [NSJSONSerialization dataWithJSONObject:errorResult options:0 error:nil];
+            NSString *resultStr = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+            return strdup([resultStr UTF8String]);
+        }
 
         // Convert the collected data to JSON and wrap in success result
         NSDictionary *successResult = @{

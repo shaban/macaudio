@@ -61,20 +61,28 @@ NSNumber* getEndpointSysExSpeed(MIDIEndpointRef endpoint) {
     }
     return @(0);
 }
+int countMIDIDevices(void) {
+    @autoreleasepool {
+        ItemCount deviceCount = MIDIGetNumberOfDevices();
+        return (int)deviceCount;
+    }
+}
 
 char* getMIDIDevices(void) {
     @autoreleasepool {
         // Get MIDI device count
         ItemCount deviceCount = MIDIGetNumberOfDevices();
         
+        // Replace the error return with success return:
         if (deviceCount == 0) {
-            NSDictionary *errorResult = @{
-                @"success": @NO,
-                @"error": @"No MIDI devices found",
-                @"errorCode": @(0),
-                @"devices": @[]
+            NSDictionary *successResult = @{
+                @"success": @YES,
+                @"devices": @[],
+                @"deviceCount": @(0),
+                @"totalDevicesScanned": @(0),
+                @"message": @"No MIDI devices found"
             };
-            NSData *jsonData = [NSJSONSerialization dataWithJSONObject:errorResult options:0 error:nil];
+            NSData *jsonData = [NSJSONSerialization dataWithJSONObject:successResult options:0 error:nil];
             NSString *json = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
             return strdup([json UTF8String]);
         }
@@ -250,6 +258,12 @@ char* getMIDIDevices(void) {
         NSString *result = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
         return strdup([result UTF8String]);
     }
+}
+
+int countAudioDevices(void) {
+    AudioObjectPropertyAddress addr = {kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+    UInt32 size = 0;
+    return (AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &addr, 0, NULL, &size) == noErr) ? (int)(size / sizeof(AudioDeviceID)) : -1;
 }
 
 // Unified device enumeration - gets all devices with both input and output capabilities

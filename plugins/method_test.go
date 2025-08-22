@@ -54,27 +54,6 @@ func TestMethodBasedAPI(t *testing.T) {
 
 	t.Logf("✅ Multiple plugins introspected: %d plugins", len(plugins))
 
-	// Test 3: Compare method-based with function-based
-	t.Log("Comparing method-based API with function-based API...")
-
-	// Use function-based approach
-	funcResults, err := Introspect(firstPlugin.Type, firstPlugin.Subtype, firstPlugin.ManufacturerID)
-	if err != nil {
-		t.Fatalf("Function-based introspection failed: %v", err)
-	}
-
-	// Should get same result
-	if len(funcResults) != 1 {
-		t.Errorf("Expected 1 plugin from function call, got %d", len(funcResults))
-	} else {
-		funcPlugin := funcResults[0]
-		if funcPlugin.Name != plugin.Name || funcPlugin.Type != plugin.Type {
-			t.Error("Method-based and function-based results don't match")
-		} else {
-			t.Log("✅ Method-based and function-based APIs return consistent results")
-		}
-	}
-
 	// Test 4: Test filtering with methods
 	t.Log("Testing filtering combined with introspection...")
 

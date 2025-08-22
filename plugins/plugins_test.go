@@ -1,6 +1,9 @@
 package plugins
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -50,6 +53,56 @@ func TestList(t *testing.T) {
 
 	if len(pluginInfos) == 0 {
 		t.Skip("No plugins available for testing")
+	}
+
+	// Test a known suite case if present and verify suite vs single behavior
+	found := false
+	for _, info := range pluginInfos {
+		if info.Name == "MS ADPCM Decoder" {
+			found = true
+			t.Logf("Found candidate plugin suite triplet: %s:%s:%s (Name=%q)",
+				info.Type, info.Subtype, info.ManufacturerID, info.Name)
+
+			// Suite: expect one or more entries
+			suite, err := info.IntrospectSuite()
+			if err != nil {
+				t.Fatalf("IntrospectSuite error: %v", err)
+			}
+			if len(suite) == 0 {
+				t.Fatalf("IntrospectSuite returned 0 plugins for triplet %s:%s:%s",
+					info.Type, info.Subtype, info.ManufacturerID)
+			}
+			t.Logf("IntrospectSuite returned %d plugin(s)", len(suite))
+
+			// Single: exact name must return exactly one
+			single, err := info.Introspect()
+			if err != nil {
+				t.Fatalf("Introspect(single) error: %v", err)
+			}
+			if single == nil || single.Name != info.Name {
+				t.Fatalf("Introspect(single) returned unexpected plugin: got %v", single)
+			}
+			t.Logf("Introspect(single) returned %q with %d parameters", single.Name, len(single.Parameters))
+
+			// Not found: mutate name to something impossible
+			bogus := info
+			bogus.Name = info.Name + "__DOES_NOT_EXIST__"
+			if _, err := bogus.Introspect(); err == nil {
+				t.Fatalf("Expected error for non-existent plugin name, got nil")
+			} else {
+				t.Logf("Introspect(non-existent) correctly errored: %v", err)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Logf("MS ADPCM Decoder plugin not found in %d total plugins (skipping suite/single checks)", len(pluginInfos))
+		for _, info := range pluginInfos {
+			if strings.Contains(strings.ToLower(info.Name), "adpcm") ||
+				strings.Contains(strings.ToLower(info.Name), "decoder") {
+				t.Logf("   - %s (%s:%s:%s)", info.Name, info.Type, info.Subtype, info.ManufacturerID)
+			}
+		}
 	}
 
 	// Test basic filtering
@@ -125,12 +178,10 @@ func TestAllPlugins(t *testing.T) {
 	// Test to ensure quick scan and full introspection deliver the same count
 	t.Log("Testing all plugins: comparing quick scan vs full introspection...")
 
-	// Enable JSON logging to capture the raw JSON output
+	// Keep JSON logging disabled to avoid noisy test output
 	originalState := enableJSONLogging
-	defer func() {
-		enableJSONLogging = originalState
-	}()
-	SetJSONLogging(true)
+	defer func() { enableJSONLogging = originalState }()
+	SetJSONLogging(false)
 
 	// First, do a quick scan to get the baseline count
 	t.Log("Step 1: Quick scan to get plugin count...")
@@ -146,9 +197,9 @@ func TestAllPlugins(t *testing.T) {
 		return
 	}
 
-	// Then, do full introspection of all plugins
-	t.Log("Step 2: Full introspection of all plugins...")
-	plugins, err := Introspect("", "", "") // All plugins
+	// Then, do full introspection of all plugins (single-plugin per info)
+	t.Log("Step 2: Full introspection (single) for all plugins...")
+	plugins, err := pluginInfos.Introspect()
 	if err != nil {
 		t.Fatalf("Full introspection failed: %v", err)
 	}
@@ -185,4 +236,55 @@ func TestAllPlugins(t *testing.T) {
 	}
 
 	t.Log("✅ All plugins test completed successfully!")
+}
+
+// TestFullScanJSONToFile performs a full scan and introspection, logging JSON to a file for manual inspection.
+func TestFullScanJSONToFile(t *testing.T) {
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "plugins_full_scan.jsonl")
+	f, err := os.Create(outPath)
+	if err != nil {
+		t.Fatalf("create log file: %v", err)
+	}
+	defer f.Close()
+
+	// Redirect JSON logs to file and enable logging
+	prev := enableJSONLogging
+	SetJSONLogWriter(f)
+	SetJSONLogging(true)
+	defer func() {
+		SetJSONLogWriter(nil)
+		SetJSONLogging(prev)
+	}()
+
+	t.Logf("Writing JSON logs to %s", outPath)
+
+	// Step 1: Quick scan (will emit a JSON record labeled QuickScan)
+	infos, err := List()
+	if err != nil {
+		t.Fatalf("quick scan failed: %v", err)
+	}
+	t.Logf("Quick scan found %d plugins", len(infos))
+
+	// Step 2: Introspect each plugin (each emits a JSON record labeled Introspect[...])
+	// Keep runtime reasonable but thorough; we’ll do all for accuracy.
+	_, err = PluginInfos(infos).Introspect()
+	if err != nil {
+		t.Fatalf("full introspection failed: %v", err)
+	}
+
+	// Flush to disk
+	if err := f.Sync(); err != nil {
+		t.Fatalf("sync log file: %v", err)
+	}
+
+	fi, statErr := f.Stat()
+	if statErr != nil {
+		t.Fatalf("stat log file: %v", statErr)
+	}
+	if fi.Size() == 0 {
+		t.Fatalf("expected JSON logs in %s, got empty file", outPath)
+	}
+
+	t.Logf("Full scan JSON written (%d bytes)", fi.Size())
 }
