@@ -25,6 +25,7 @@ build-native:
 	@echo "📊 Library size: $(shell ls -lh libmacaudio.dylib | awk '{print $$5}')"
 	@echo "🔧 TimePitch buffer scheduling fix included"
 	@echo "🎧 Tap functionality integrated into dylib"
+	@echo "🔗 Library install name: @rpath/libmacaudio.dylib (portable)"
 
 # Test device library (comprehensive test of all device functionality)
 test-devices:
