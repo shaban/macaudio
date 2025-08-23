@@ -104,9 +104,10 @@ type PlaybackOptions struct {
 
 // InputOptions contains input-specific configuration
 type InputOptions struct {
-	Device       *devices.AudioDevice `json:"device"`       // Complete device info with capabilities
-	ChannelIndex int                  `json:"channelIndex"` // Channel index on the device
-	PluginChain  *PluginChain         `json:"pluginChain"`  // Effects chain
+	Device       *devices.AudioDevice `json:"device,omitempty"`      // Audio device (for audio input)
+	MidiDevice   *devices.MIDIDevice  `json:"midi_device,omitempty"` // MIDI device (for MIDI input)
+	ChannelIndex int                  `json:"channelIndex"`          // Channel index on device (audio) or MIDI channel (MIDI)
+	PluginChain  *PluginChain         `json:"pluginChain"`           // Effects chain
 }
 
 // IsInput returns true if this is an input channel
@@ -117,6 +118,16 @@ func (c *Channel) IsInput() bool {
 // IsPlayback returns true if this is a playback channel
 func (c *Channel) IsPlayback() bool {
 	return c.PlaybackOptions != nil
+}
+
+// IsAudioInput returns true if this is an audio input channel
+func (c *Channel) IsAudioInput() bool {
+	return c.InputOptions != nil && c.InputOptions.Device != nil
+}
+
+// IsMIDIInput returns true if this is a MIDI input channel
+func (c *Channel) IsMIDIInput() bool {
+	return c.InputOptions != nil && c.InputOptions.MidiDevice != nil
 }
 
 // SetVolume sets the volume for this channel (0.0 to 1.0)
