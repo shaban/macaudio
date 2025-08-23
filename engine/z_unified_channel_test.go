@@ -188,3 +188,189 @@ func TestUnifiedChannelTypeDetection(t *testing.T) {
 		t.Error("Should detect MIDI input channel")
 	}
 }
+
+// TestCreateMIDIInputChannel tests the new CreateMIDIInputChannel method
+func TestCreateMIDIInputChannel(t *testing.T) {
+	// Create test engine
+	audioDevices, err := devices.GetAudio()
+	if err != nil {
+		t.Fatalf("Failed to get audio devices: %v", err)
+	}
+	if len(audioDevices) == 0 {
+		t.Skip("No audio devices available for testing")
+	}
+
+	outputDevice := &audioDevices[0]
+	engine, err := NewEngine(outputDevice, 0, 512)
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+	defer engine.Destroy()
+
+	// Create test MIDI device
+	testMIDIDevice := &devices.MIDIDevice{
+		Device: devices.Device{
+			Name:     "Test MIDI Controller",
+			UID:      "test-midi-uid",
+			IsOnline: true,
+		},
+		DeviceName:      "Virtual MIDI",
+		Manufacturer:    "TestCorp",
+		Model:           "TestController",
+		InputEndpointID: 123,
+		IsInput:         true,
+	}
+
+	// Test creating MIDI input channel
+	channel, err := engine.CreateMIDIInputChannel(testMIDIDevice, 1)
+	if err != nil {
+		t.Fatalf("Failed to create MIDI input channel: %v", err)
+	}
+
+	// Validate the channel
+	if channel == nil {
+		t.Fatal("Created channel is nil")
+	}
+
+	if !channel.IsMIDIInput() {
+		t.Error("Channel should be detected as MIDI input")
+	}
+
+	if channel.IsAudioInput() {
+		t.Error("Channel should not be detected as audio input")
+	}
+
+	if channel.IsPlayback() {
+		t.Error("Channel should not be detected as playback")
+	}
+
+	// Validate the channel configuration
+	if channel.Volume != 1.0 {
+		t.Errorf("Expected default volume 1.0, got %f", channel.Volume)
+	}
+
+	if channel.Pan != 0.0 {
+		t.Errorf("Expected default pan 0.0, got %f", channel.Pan)
+	}
+
+	if channel.InputOptions == nil {
+		t.Fatal("InputOptions should not be nil")
+	}
+
+	if channel.InputOptions.MidiDevice != testMIDIDevice {
+		t.Error("MIDI device not properly set")
+	}
+
+	if channel.InputOptions.ChannelIndex != 1 {
+		t.Errorf("Expected MIDI channel 1, got %d", channel.InputOptions.ChannelIndex)
+	}
+
+	// Validate engine state
+	if len(engine.Channels) != 1 {
+		t.Errorf("Expected 1 channel in engine, got %d", len(engine.Channels))
+	}
+
+	if engine.Channels[0] != channel {
+		t.Error("Channel not properly added to engine")
+	}
+
+	t.Logf("✅ Successfully created MIDI input channel for device %s on MIDI channel %d",
+		testMIDIDevice.Name, channel.InputOptions.ChannelIndex)
+}
+
+// TestMixedChannelTypes tests creating different channel types in the same engine
+func TestMixedChannelTypes(t *testing.T) {
+	// Create test engine
+	audioDevices, err := devices.GetAudio()
+	if err != nil {
+		t.Fatalf("Failed to get audio devices: %v", err)
+	}
+	if len(audioDevices) == 0 {
+		t.Skip("No audio devices available for testing")
+	}
+
+	outputDevice := &audioDevices[0]
+	engine, err := NewEngine(outputDevice, 0, 512)
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+	defer engine.Destroy()
+
+	// 1. Create a playback channel
+	playbackChannel, err := engine.CreatePlaybackChannel("/System/Library/Sounds/Ping.aiff")
+	if err != nil {
+		t.Fatalf("Failed to create playback channel: %v", err)
+	}
+
+	// 2. Create an audio input channel (if we have input capability)
+	var audioInputChannel *Channel
+	for _, device := range audioDevices {
+		if device.CanInput() {
+			audioInputChannel, err = engine.CreateInputChannel(&device, 0)
+			if err != nil {
+				t.Fatalf("Failed to create audio input channel: %v", err)
+			}
+			break
+		}
+	}
+
+	// 3. Create a MIDI input channel
+	testMIDIDevice := &devices.MIDIDevice{
+		Device: devices.Device{
+			Name:     "Virtual MIDI",
+			UID:      "test-midi-uid",
+			IsOnline: true,
+		},
+		DeviceName:   "Test MIDI",
+		Manufacturer: "TestCorp",
+		IsInput:      true,
+	}
+
+	midiInputChannel, err := engine.CreateMIDIInputChannel(testMIDIDevice, 1)
+	if err != nil {
+		t.Fatalf("Failed to create MIDI input channel: %v", err)
+	}
+
+	// Validate we have the right number of channels
+	expectedChannels := 2 // playback + MIDI
+	if audioInputChannel != nil {
+		expectedChannels = 3 // playback + audio input + MIDI
+	}
+
+	if len(engine.Channels) != expectedChannels {
+		t.Fatalf("Expected %d channels, got %d", expectedChannels, len(engine.Channels))
+	}
+
+	// Validate each channel type
+	if !playbackChannel.IsPlayback() {
+		t.Error("First channel should be playback type")
+	}
+
+	if audioInputChannel != nil && !audioInputChannel.IsAudioInput() {
+		t.Error("Second channel should be audio input type")
+	}
+
+	if !midiInputChannel.IsMIDIInput() {
+		t.Error("Last channel should be MIDI input type")
+	}
+
+	// Test serialization with mixed channel types
+	jsonData, err := engine.SerializeState()
+	if err != nil {
+		t.Fatalf("Failed to serialize engine with mixed channel types: %v", err)
+	}
+
+	// Test deserialization
+	var restoredEngine Engine
+	err = restoredEngine.DeserializeState(jsonData)
+	if err != nil {
+		t.Fatalf("Failed to deserialize engine with mixed channel types: %v", err)
+	}
+
+	// Validate restored state
+	if len(restoredEngine.Channels) != expectedChannels {
+		t.Errorf("After deserialization: expected %d channels, got %d", expectedChannels, len(restoredEngine.Channels))
+	}
+
+	t.Logf("✅ Successfully created and serialized engine with %d mixed channel types", expectedChannels)
+}
