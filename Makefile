@@ -6,9 +6,9 @@
 # Default target - run comprehensive device tests
 all: test-devices
 
-# Build native library (libmacaudio.dylib) with correct @rpath setting - ENGINE + TAP UNIFIED
+# Build native library (libmacaudio.dylib) with correct @rpath setting - ENGINE + TAP + MIDI UNIFIED
 build-native:
-	@echo "🔨 Building native libmacaudio.dylib (engine + tap unified) with @rpath..."
+	@echo "🔨 Building native libmacaudio.dylib (engine + tap + MIDI unified) with @rpath..."
 	clang -shared -fobjc-arc \
 		-framework AVFoundation \
 		-framework AudioToolbox \
@@ -20,11 +20,13 @@ build-native:
 		native/player.m \
 		native/node.m \
 		native/format.m \
-		native/tap.m
-	@echo "✅ Native library built: libmacaudio.dylib (unified engine + tap)"
+		native/tap.m \
+		native/sampler.m
+	@echo "✅ Native library built: libmacaudio.dylib (unified engine + tap + MIDI)"
 	@echo "📊 Library size: $(shell ls -lh libmacaudio.dylib | awk '{print $$5}')"
 	@echo "🔧 TimePitch buffer scheduling fix included"
 	@echo "🎧 Tap functionality integrated into dylib"
+	@echo "🎹 MIDI instrument support with AVAudioUnitMIDIInstrument"
 	@echo "🔗 Library install name: @rpath/libmacaudio.dylib (portable)"
 
 # Test device library (comprehensive test of all device functionality)

@@ -87,6 +87,7 @@ type Channel struct {
 	// Optional type-specific data (nil when not applicable)
 	PlaybackOptions *PlaybackOptions `json:"playbackOptions,omitempty"`
 	InputOptions    *InputOptions    `json:"inputOptions,omitempty"`
+	SamplerOptions  *SamplerOptions  `json:"samplerOptions,omitempty"`
 
 	// Internal mixing node for this channel (not serialized)
 	mixerNodePtr unsafe.Pointer `json:"-"`
@@ -110,6 +111,12 @@ type InputOptions struct {
 	PluginChain  *PluginChain         `json:"pluginChain"`           // Effects chain
 }
 
+// SamplerOptions contains sampler-specific configuration (minimal for now)
+type SamplerOptions struct {
+	// Native AVAudioUnitSampler instance (not serialized)
+	samplerPtr unsafe.Pointer `json:"-"`
+}
+
 // IsInput returns true if this is an input channel
 func (c *Channel) IsInput() bool {
 	return c.InputOptions != nil
@@ -128,6 +135,11 @@ func (c *Channel) IsAudioInput() bool {
 // IsMIDIInput returns true if this is a MIDI input channel
 func (c *Channel) IsMIDIInput() bool {
 	return c.InputOptions != nil && c.InputOptions.MidiDevice != nil
+}
+
+// IsSampler returns true if this is a sampler channel  
+func (c *Channel) IsSampler() bool {
+	return c.SamplerOptions != nil
 }
 
 // SetVolume sets the volume for this channel (0.0 to 1.0)

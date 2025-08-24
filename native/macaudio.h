@@ -220,6 +220,27 @@ AudioBufferMetrics audioplayer_analyze_buffer_at_time(AudioPlayer* player, doubl
 const char* audioplayer_analyze_file_segment(AudioPlayer* player, double startTime, double duration, double* rms, int* frameCount);
 void audioplayer_destroy(AudioPlayer* player);
 
+// ==============================================
+// Audio Sampler (AVAudioUnitSampler)
+// ==============================================
+typedef struct {
+    void* samplerNode;  // AVAudioUnitSampler*
+    void* engine;       // AVAudioEngine* reference
+    bool isConnected;
+} AudioSampler;
+
+typedef struct {
+    void* result;
+    const char* error;
+} AudioSamplerResult;
+
+// Basic sampler functions
+AudioSamplerResult audiosampler_create(void* enginePtr);
+const char* audiosampler_start_note(AudioSampler* sampler, int note, int velocity, int channel);
+const char* audiosampler_stop_note(AudioSampler* sampler, int note, int channel);
+const char* audiosampler_connect_to_mixer(AudioSampler* sampler, void* mixerPtr, int busIndex);
+void audiosampler_destroy(AudioSampler* sampler);
+
 #ifdef __cplusplus
 }
 #endif
