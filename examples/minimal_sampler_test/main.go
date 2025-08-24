@@ -89,7 +89,7 @@ func main() {
 
 	fmt.Println("\n📊 Test Summary:")
 	fmt.Println("   ✅ Engine created and started")
-	fmt.Println("   ✅ Sampler channel created") 
+	fmt.Println("   ✅ Sampler channel created")
 	fmt.Println("   ✅ Notes triggered (may be silent - needs instrument loading)")
 	fmt.Println("\n❓ Did you hear any sound?")
 	fmt.Println("   If NO: Sampler needs instrument file (.dls/.sf2)")

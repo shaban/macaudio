@@ -213,6 +213,93 @@ opt := session.Options{
 sess, _ := session.NewSessionWithOptions(session.DefaultAudioSpec, opt)
 ```
 
+## Usage & Examples
+
+### Working with Samplers (MIDI Sound Generation)
+
+The sampler channel provides direct note control using AVAudioUnitSampler:
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "time"
+
+    "github.com/shaban/macaudio/devices"
+    "github.com/shaban/macaudio/engine"
+)
+
+func main() {
+    // Get available audio devices
+    audioDevices, err := devices.GetAudio()
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    var outputDevice *devices.AudioDevice
+    for _, device := range audioDevices {
+        if device.CanOutput() {
+            outputDevice = &device
+            break
+        }
+    }
+
+    // Create audio engine
+    audioEngine, err := engine.NewEngine(outputDevice, 0, 512)
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer audioEngine.Destroy()
+
+    // Create sampler channel
+    samplerChannel, err := engine.CreateSamplerChannel(audioEngine)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Start the engine
+    if err := audioEngine.Start(); err != nil {
+        log.Fatal(err)
+    }
+
+    // Play a note (MIDI note 60 = Middle C, velocity 100)
+    fmt.Println("🎵 Playing Middle C...")
+    if err := samplerChannel.StartNote(60, 100); err != nil {
+        log.Printf("Error starting note: %v", err)
+    }
+
+    time.Sleep(2 * time.Second)
+
+    // Stop the note
+    if err := samplerChannel.StopNote(60); err != nil {
+        log.Printf("Error stopping note: %v", err)
+    }
+
+    // Play a melody using PlayNote (automatic timing)
+    notes := []int{60, 64, 67, 72} // C, E, G, C
+    for _, note := range notes {
+        fmt.Printf("🎶 Playing note %d...\n", note)
+        samplerChannel.PlayNote(note, 100, 500*time.Millisecond)
+    }
+}
+```
+
+### Build Requirements
+
+The library uses standard Go CGO with no additional setup required:
+
+```bash
+# Standard Go commands work directly
+go build ./...
+go run your_program.go
+
+# No shell scripts or environment variables needed
+```
+
+The native `libmacaudio.dylib` library is automatically linked using CGO directives.
+
 ## Installation
 
 ```bash

@@ -1,8 +1,6 @@
 package engine
 
 /*
-#cgo CFLAGS: -x objective-c -fobjc-arc
-#cgo LDFLAGS: -L.. -lmacaudio -Wl,-rpath,..
 #include "../native/macaudio.h"
 #include <stdlib.h>
 */

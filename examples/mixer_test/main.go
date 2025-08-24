@@ -28,7 +28,7 @@ func main() {
 	defer engine.Destroy()
 
 	// Create a playback channel
-	channel, err := engine.CreatePlaybackChannel("../../avaudio/engine/idea.m4a")
+	channel, err := engine.CreatePlaybackChannel("./engine/idea.m4a")
 	if err != nil {
 		log.Fatalf("Failed to create playback channel: %v", err)
 	}

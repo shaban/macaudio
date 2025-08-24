@@ -1,8 +1,6 @@
 package engine
 
 /*
-#cgo CFLAGS: -x objective-c -fobjc-arc
-#cgo LDFLAGS: -L.. -lmacaudio -Wl,-rpath,..
 #include "../native/macaudio.h"
 #include <stdlib.h>
 */
@@ -137,7 +135,7 @@ func (c *Channel) IsMIDIInput() bool {
 	return c.InputOptions != nil && c.InputOptions.MidiDevice != nil
 }
 
-// IsSampler returns true if this is a sampler channel  
+// IsSampler returns true if this is a sampler channel
 func (c *Channel) IsSampler() bool {
 	return c.SamplerOptions != nil
 }

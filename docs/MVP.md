@@ -1,34 +1,127 @@
 # MacAudio Engine MVP Design Document
 
-**Version**: 1.1  
-**Date**: August 21, 2025  
-**Status**: Implemented - Clean API Architecture
+**Version**: 2.0  
+**Date**: August 24, 2025  
+**Status**: Implemented - Sampler-Based Architecture
 
 ## Architecture Overview
 
-MacAudio provides a streamlined 8-channel audio mixing engine built on AVAudioEngine, designed for simplicity and performance. The architecture eliminates complex send/return routing in favor of clean, direct signal paths suitable for live performance, recording, and basic production.
+MacAudio provides a streamlined audio mixing engine built on AVAudioEngine, designed for simplicity and performance. The current implementation focuses on sampler-based sound generation using direct `AVAudioUnitSampler` control rather than complex MIDI routing.
 
 ## Core Components
 
 ### 1. Engine
 - **Purpose**: Central coordinator managing parameter tree, routing, and lifecycle
-- **Channel Management**: Fixed-length array[8] of channels (not slice)
-- **Channel Allocation**: Automatic bus assignment (array index = mixer bus)
-- **Master Controls**: Master volume only (no master pan)
+- **Channel Management**: Slice-based channel architecture with dynamic bus allocation
+- **Channel Allocation**: Automatic bus assignment with unique identifier tracking
+- **Master Controls**: Master volume control
 - **State Serialization**: Engine IS the parameter tree - direct JSON serialization
-- **Device Management**: Optional input/output device assignments
+- **Device Management**: Output device assignment (input devices for future expansion)
+- **CGO Integration**: Standard Go CGO practices with consolidated build directives
 
-### 2. Unified Channel Architecture
-- **Channel Types**: Input or Playback (determined by presence of InputOptions/PlaybackOptions)
-- **Base Properties**: Volume, Pan, BusIndex, Type
-- **Type-Specific Options**: Optional InputOptions or PlaybackOptions (nil when not applicable)
-- **Clean Design**: Eliminates interface complexity with clear struct composition
+### 2. Current Channel Types
 
-#### Input Channel (Audio Device Input)
-- **Source**: Audio device channel (mono)  
-- **Configuration**: InputOptions containing Device, ChannelIndex, PluginChain
-- **Plugin Chain**: Up to 8 AudioUnit effects in series with individual bypass
-- **Device Selection**: Via devices library with capability validation
+#### Sampler Channel (Primary Implementation)
+- **Source**: AVAudioUnitSampler for direct MIDI note control
+- **API**: `StartNote(note, velocity)`, `StopNote(note)`, `PlayNote(note, velocity, duration)`
+- **Integration**: Direct connection to main mixer via automatic bus allocation
+- **Sound Generation**: Real-time note triggering without MIDI routing complexity
+- **Architecture**: `Go → C → AVAudioUnitSampler → AVAudioEngine → Speakers`
+
+#### Playback Channel (Legacy - Documented but Complex)
+- **Source**: Audio file playback with optional time/pitch effects
+- **Features**: AVAudioPlayerNode with AVAudioUnitTimePitch effects
+- **Complexity**: Multiple AVAudioNode connections and effects chains
+- **Status**: Functional but complex - sampler approach preferred for new development
+
+## Key Architectural Decisions
+
+### 1. Sampler-First Approach
+**Decision**: Focus on `AVAudioUnitSampler` with direct note control rather than MIDI routing.
+
+**Rationale**: 
+- Complex MIDI routing via IAC Driver produced no reliable sound output
+- Direct sampler approach produces immediate, predictable results
+- Simpler architecture with fewer failure points
+- Better suited for programmatic music generation
+
+### 2. Standard Go CGO Practices
+**Decision**: Use `${SRCDIR}` path resolution and package-level CGO directive consolidation.
+
+**Benefits**:
+- Eliminates custom shell scripts (`macaudio_run.sh` removed)
+- Standard `go build` and `go run` commands work directly
+- No duplicate linker warnings
+- Compatible with standard Go tooling
+
+### 3. Dynamic Bus Allocation
+**Decision**: Use pointer-based unique identifiers for automatic bus assignment.
+
+**Implementation**:
+- `map[uintptr]int` tracks mixer node pointer to bus index mapping
+- Automatic bus allocation with availability checking
+- Maximum bus limit enforcement (typically 8-16 buses)
+
+## Current API Usage
+
+### Creating and Using Sampler Channels
+
+```go
+// Create engine with output device
+audioDevices, _ := devices.GetAudio()
+outputDevice := findOutputDevice(audioDevices)
+engine, _ := engine.NewEngine(outputDevice, 0, 512)
+
+// Create sampler channel
+samplerChannel, _ := engine.CreateSamplerChannel(engine)
+
+// Start engine
+engine.Start()
+
+// Direct note control
+samplerChannel.StartNote(60, 100)  // Middle C, velocity 100
+time.Sleep(2 * time.Second)
+samplerChannel.StopNote(60)
+
+// Automatic timing
+samplerChannel.PlayNote(64, 100, 500*time.Millisecond)  // E for 0.5 seconds
+```
+
+## Build System
+
+### Standard Go Practices
+- **CGO Directives**: Consolidated in `engine/engine.go` with `#cgo LDFLAGS: -L${SRCDIR}/.. -lmacaudio -Wl,-rpath,${SRCDIR}/..`
+- **Header Includes**: Individual files include only `#include "../native/macaudio.h"` as needed
+- **No Custom Scripts**: Direct `go build` and `go run` support
+- **Library Linking**: Automatic via CGO directives, no manual environment variables
+
+## Implementation Status
+
+### ✅ Completed
+- Sampler channel creation and note control
+- Standard CGO build system with no warnings
+- Automatic bus allocation and management
+- Working examples producing audible output
+- Clean API without shell script dependencies
+
+### 🔄 Legacy/Complex (Maintained but not primary focus)
+- Playback channels with time/pitch effects
+- Multi-node effect chains
+- Complex AudioUnit routing
+
+### 📋 Future Considerations
+- Input channels for microphone/line input processing
+- Plugin effect chains for samplers
+- Instrument loading (.dls/.sf2 files)
+- MIDI file playback via sampler sequencing
+
+## Key Files
+
+- `engine/engine.go` - Main engine with consolidated CGO directives
+- `engine/sampler_channel.go` - Sampler implementation (primary focus)
+- `engine/channel.go` - Channel management and bus allocation
+- `native/sampler.m` - Objective-C AVAudioUnitSampler wrapper
+- `examples/minimal_sampler_test/` - Working sampler example
 - **Format Handling**: Auto-conversion via AVAudioEngine (non-nil format)
 - **Zero-Latency Monitoring**: Supported via hardware capabilities + high sample rate/low buffer
 
